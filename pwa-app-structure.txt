@@ -1,0 +1,33 @@
+MB SMASH REPAIR - PWA APP BUILD PLAN
+================================================================================
+
+TECH STACK:
+- React (frontend)
+- IndexedDB (local storage for offline capability)
+- Excel file sync (via ExcelJS library)
+- Claude API (invoice scanning)
+- Vercel (deployment)
+
+SCREENS TO BUILD:
+1. Dashboard - Metrics & overview
+2. Master Inventory - All 959 parts searchable
+3. Invoice Scanner - Photo → AI extraction
+4. Invoice History - All logged invoices
+5. Returns Tracker - Parts being returned
+6. Reports - Cost analysis
+7. Settings - API key, Excel sync
+
+FEATURES:
+- Real-time search
+- Filter by status/dealership/vehicle
+- Mark parts received with one tap
+- AI invoice scanning
+- Auto-export to Excel
+- Dark blue theme
+- Mobile responsive
+- Fast load times
+
+BUILD TIME: ~4 hours
+DEPLOY TIME: ~30 minutes
+
+STARTING NOW...

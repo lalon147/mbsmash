@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invoice Parser - Extract Parts Data</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 500px;
+            width: 100%;
+            padding: 30px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 24px;
+        }
+        
+        .subtitle {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 30px;
+        }
+        
+        .upload-area {
+            border: 2px dashed #667eea;
+            border-radius: 10px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: #f8f9ff;
+            margin-bottom: 20px;
+        }
+        
+        .upload-area:hover {
+            background: #f0f2ff;
+            border-color: #764ba2;
+        }
+        
+        .upload-area.dragover {
+            background: #e8ebff;
+            border-color: #764ba2;
+        }
+        
+        .upload-icon {
+            font-size: 40px;
+            margin-bottom: 10px;
+        }
+        
+        .upload-text {
+            color: #667eea;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .upload-subtext {
+            color: #999;
+            font-size: 12px;
+        }
+        
+        input[type="file"] {
+            display: none;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        button {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 14px;
+        }
+        
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+        
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+        
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+        
+        .btn-success {
+            background: #10b981;
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #059669;
+        }
+        
+        .info-box {
+            background: #e0e7ff;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            color: #333;
+        }
+        
+        .preview {
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        .preview.show {
+            display: block;
+        }
+        
+        .preview-image {
+            max-width: 100%;
+            max-height: 200px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        
+        .manual-form {
+            display: none;
+        }
+        
+        .manual-form.show {
+            display: block;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 5px;
+            font-size: 13px;
+        }
+        
+        input[type="text"],
+        input[type="date"],
+        input[type="number"],
+        textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-family: inherit;
+            font-size: 13px;
+        }
+        
+        textarea {
+            resize: vertical;
+            min-height: 60px;
+        }
+        
+        .part-item {
+            background: #f3f4f6;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            font-size: 12px;
+        }
+        
+        .part-item strong {
+            color: #667eea;
+        }
+        
+        .success-message {
+            background: #d1fae5;
+            border: 1px solid #6ee7b7;
+            color: #047857;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        .success-message.show {
+            display: block;
+        }
+        
+        .csv-output {
+            background: #f3f4f6;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            margin-bottom: 15px;
+            font-family: monospace;
+            font-size: 11px;
+            max-height: 150px;
+            overflow-y: auto;
+            display: none;
+        }
+        
+        .csv-output.show {
+            display: block;
+        }
+        
+        .instructions {
+            background: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 20px;
+            font-size: 12px;
+            color: #92400e;
+        }
+        
+        @media (max-width: 480px) {
+            .container {
+                padding: 20px;
+            }
+            
+            h1 {
+                font-size: 20px;
+            }
+            
+            .button-group {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📋 Invoice Parser</h1>
+        <p class="subtitle">Extract parts data from invoice photos</p>
+        
+        <div class="info-box">
+            <strong>📱 How it works:</strong><br>
+            1. Upload invoice photo or manually enter data<br>
+            2. Data gets organized<br>
+            3. Export as CSV to paste into Excel
+        </div>
+        
+        <div class="upload-area" id="uploadArea">
+            <div class="upload-icon">📸</div>
+            <div class="upload-text">Tap to upload invoice photo</div>
+            <div class="upload-subtext">PNG, JPG, PDF (optional - manual entry also works)</div>
+            <input type="file" id="fileInput" accept="image/*,.pdf">
+        </div>
+        
+        <div class="button-group">
+            <button class="btn-secondary" onclick="toggleManualForm()">✏️ Or Enter Manually</button>
+            <button class="btn-secondary" onclick="clearAll()">🗑️ Clear</button>
+        </div>
+        
+        <div class="manual-form" id="manualForm">
+            <h3 style="margin-bottom: 15px; font-size: 16px;">Invoice Details</h3>
+            
+            <div class="form-group">
+                <label>Invoice Date</label>
+                <input type="date" id="invoiceDate">
+            </div>
+            
+            <div class="form-group">
+                <label>Invoice Number</label>
+                <input type="text" id="invoiceNumber" placeholder="e.g., OR13170707">
+            </div>
+            
+            <div class="form-group">
+                <label>Dealership Name</label>
+                <input type="text" id="dealership" placeholder="e.g., PRESTON TOYOTA">
+            </div>
+            
+            <h3 style="margin: 20px 0 15px; font-size: 14px;">Parts (One Per Line)</h3>
+            <div class="form-group">
+                <label>Format: Part Name | Qty | Price | Total</label>
+                <textarea id="partsData" placeholder="COVER FR BUMPER | 1 | 237.03 | 237.03&#10;ENDLER S PANEL | 1 | 42.80 | 42.80"></textarea>
+            </div>
+            
+            <button class="btn-primary" style="width: 100%;" onclick="processManualData()">✓ Process Data</button>
+        </div>
+        
+        <div class="success-message" id="successMessage">
+            ✓ Invoice processed successfully!
+        </div>
+        
+        <div id="preview" class="preview">
+            <img id="previewImage" class="preview-image">
+            <div id="previewText"></div>
+        </div>
+        
+        <div class="csv-output" id="csvOutput"></div>
+        
+        <div style="margin-top: 15px;">
+            <button class="btn-success" id="downloadBtn" style="width: 100%; display: none;" onclick="downloadCSV()">
+                ⬇️ Download CSV for Excel
+            </button>
+        </div>
+        
+        <div class="instructions">
+            <strong>📌 Next Steps:</strong><br>
+            1. Download the CSV file<br>
+            2. Open your Parts_Management_System.xlsx<br>
+            3. Go to "Invoice Tracker" sheet<br>
+            4. Paste the CSV data<br>
+            5. Done! ✨
+        </div>
+    </div>
+    
+    <script>
+        let invoiceData = null;
+        
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        
+        // File upload handling
+        uploadArea.addEventListener('click', () => fileInput.click());
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length) handleFile(files[0]);
+        });
+        
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) handleFile(e.target.files[0]);
+        });
+        
+        function handleFile(file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const preview = document.getElementById('preview');
+                const previewImage = document.getElementById('previewImage');
+                const previewText = document.getElementById('previewText');
+                
+                if (file.type.startsWith('image/')) {
+                    previewImage.src = e.target.result;
+                    previewImage.style.display = 'block';
+                    previewText.innerHTML = `<p style="color: #667; font-size: 12px;">Photo uploaded! Now manually enter the details below, or I can help extract it if you describe the parts.</p>`;
+                } else {
+                    previewText.innerHTML = `<p style="color: #667; font-size: 12px;">📄 PDF uploaded! Please manually enter the invoice details below.</p>`;
+                    previewImage.style.display = 'none';
+                }
+                
+                preview.classList.add('show');
+                document.getElementById('manualForm').classList.add('show');
+            };
+            reader.readAsDataURL(file);
+        }
+        
+        function toggleManualForm() {
+            document.getElementById('manualForm').classList.toggle('show');
+        }
+        
+        function processManualData() {
+            const invoiceDate = document.getElementById('invoiceDate').value;
+            const invoiceNumber = document.getElementById('invoiceNumber').value;
+            const dealership = document.getElementById('dealership').value;
+            const partsData = document.getElementById('partsData').value;
+            
+            if (!invoiceDate || !invoiceNumber || !dealership || !partsData) {
+                alert('Please fill in all fields');
+                return;
+            }
+            
+            const parts = partsData.split('\n').filter(line => line.trim());
+            invoiceData = {
+                invoiceDate,
+                invoiceNumber,
+                dealership,
+                items: []
+            };
+            
+            let total = 0;
+            parts.forEach(part => {
+                const [name, qty, price, itemTotal] = part.split('|').map(s => s.trim());
+                if (name && qty && price) {
+                    invoiceData.items.push({
+                        partName: name,
+                        quantity: parseInt(qty) || 1,
+                        unitPrice: parseFloat(price) || 0,
+                        total: parseFloat(itemTotal) || (parseInt(qty) * parseFloat(price))
+                    });
+                    total += parseFloat(itemTotal) || (parseInt(qty) * parseFloat(price));
+                }
+            });
+            
+            invoiceData.totalAmount = total;
+            
+            generateCSV();
+            showSuccess();
+        }
+        
+        function generateCSV() {
+            if (!invoiceData) return;
+            
+            let csv = 'Invoice Date,Invoice #,Dealership,Part Name,Quantity,Unit Price,Total\n';
+            
+            invoiceData.items.forEach(item => {
+                csv += `"${invoiceData.invoiceDate}","${invoiceData.invoiceNumber}","${invoiceData.dealership}","${item.partName}",${item.quantity},"${item.unitPrice}","${item.total}"\n`;
+            });
+            
+            const csvOutput = document.getElementById('csvOutput');
+            csvOutput.textContent = csv;
+            csvOutput.classList.add('show');
+            
+            document.getElementById('downloadBtn').style.display = 'block';
+        }
+        
+        function downloadCSV() {
+            if (!invoiceData) return;
+            
+            let csv = 'Invoice Date,Invoice #,Dealership,Part Name,Quantity,Unit Price,Total\n';
+            
+            invoiceData.items.forEach(item => {
+                csv += `"${invoiceData.invoiceDate}","${invoiceData.invoiceNumber}","${invoiceData.dealership}","${item.partName}",${item.quantity},"${item.unitPrice}","${item.total}"\n`;
+            });
+            
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `invoice_${invoiceData.invoiceNumber}_${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+            window.URL.revokeObjectURL(url);
+        }
+        
+        function showSuccess() {
+            const msg = document.getElementById('successMessage');
+            msg.classList.add('show');
+            setTimeout(() => msg.classList.remove('show'), 3000);
+        }
+        
+        function clearAll() {
+            document.getElementById('fileInput').value = '';
+            document.getElementById('invoiceDate').value = '';
+            document.getElementById('invoiceNumber').value = '';
+            document.getElementById('dealership').value = '';
+            document.getElementById('partsData').value = '';
+            document.getElementById('preview').classList.remove('show');
+            document.getElementById('csvOutput').classList.remove('show');
+            document.getElementById('downloadBtn').style.display = 'none';
+            document.getElementById('manualForm').classList.remove('show');
+            invoiceData = null;
+        }
+        
+        // Set today's date by default
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('invoiceDate').value = today;
+    </script>
+</body>
+</html>

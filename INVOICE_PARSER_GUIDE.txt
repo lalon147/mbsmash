@@ -1,0 +1,92 @@
+================================================================================
+SMASH REPAIR PARTS MANAGEMENT SYSTEM - INVOICE PARSER TOOL
+================================================================================
+
+HOW TO USE YOUR NEW SYSTEM:
+================================================================================
+
+1. MASTER INVENTORY SHEET (Main Sheet)
+   - This is where ALL your parts are organized
+   - Columns: Registration | Status | Parts Name | Dealership | Price | etc.
+   - 959 parts from all your files are already here!
+   
+   TO UPDATE:
+   ✓ Change "Status" column to "Received" when parts arrive
+   ✓ Fill in "Dealership" if missing (use PT, SSS, ARIF, etc.)
+   ✓ Add prices where available
+   ✓ "Days Waiting" auto-calculates how long you've been waiting
+   
+2. DASHBOARD SHEET
+   - Auto-updates as you update Master Inventory
+   - Shows:
+     • Total Parts Ordered
+     • Parts Received
+     • Parts Pending
+     • Ready to Return
+     • Overdue Items (waiting >30 days)
+   
+3. INVOICE TRACKER
+   - Log invoices here when they arrive
+   - Manually enter: Invoice Date | Invoice # | Dealership | Part Info
+   - This helps match invoices to orders
+   
+4. RETURN TRACKER
+   - When you decide NOT to use a part, mark it for return
+   - Track: What you're returning | When | To which dealership
+   
+5. SUMMARY REPORT
+   - Cost breakdown per vehicle
+   - Shows which cars cost most to repair
+
+================================================================================
+HOW TO AUTOMATE WITH PHOTOS (NEXT STEP):
+================================================================================
+
+Currently, you're uploading invoice PHOTOS/PDFs. Here's how to automate that:
+
+SIMPLE VERSION (Manual but Fast):
+- When invoice arrives, take a photo
+- Use Google Lens or phone camera to read text
+- Manually enter the extracted data into "Invoice Tracker"
+- Takes 2-3 minutes per invoice
+
+ADVANCED VERSION (Full Automation):
+- I can build a web app that:
+  • You upload invoice photo
+  • AI reads the text automatically
+  • Extracts: Part numbers, Quantities, Prices, Dealership
+  • Auto-fills "Invoice Tracker"
+  • One-click to log as "Received" in Master Inventory
+  
+Would you like me to build that web app? Takes about 30 minutes.
+
+================================================================================
+DATA CLEANING NOTES:
+================================================================================
+
+Your data had some inconsistencies that I've noted:
+- Dealership names were abbreviated (PT, SSS, ARIF, etc.) 
+- Received status had different formats (Received, RECEIVED, etc.)
+- Prices were incomplete
+- Invoice dates were missing
+
+I left these AS-IS so you can fill them in with correct info.
+
+RECOMMENDATION: Go through Master Inventory sheet and:
+1. Standardize dealership names (pick one format)
+2. Standardize status (use: Ordered, Received, Return, Cancelled)
+3. Add prices where you know them
+4. Add expected delivery dates
+
+Takes 1-2 hours to clean, but then everything will work perfectly.
+
+================================================================================
+NEXT STEPS:
+================================================================================
+
+1. Download "Parts_Management_System.xlsx"
+2. Start filling in missing data (dealerships, prices, dates)
+3. As parts arrive, change Status to "Received"
+4. Let me know if you want the auto-invoice parser tool built!
+
+Questions? Let me know!

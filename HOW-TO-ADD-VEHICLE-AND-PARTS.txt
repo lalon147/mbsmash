@@ -1,0 +1,199 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║              ✅ HOW TO ADD A VEHICLE & ADD PARTS ✅                          ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+ADDED TO APP! 🚀
+═══════════════════════════════════════════════════════════════════════════════
+
+You can now add new vehicles and parts directly in the app!
+
+═══════════════════════════════════════════════════════════════════════════════
+
+HOW TO ADD A VEHICLE:
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Open the app and go to "Inventory" tab
+2. Click the blue "Add Vehicle" button (top right)
+3. Enter vehicle registration number:
+   • Example: "1XS3FS"
+   • Example: "ABC123"
+   • Example: "U2765"
+4. Click "Add Vehicle"
+5. Done! Vehicle is registered
+
+═══════════════════════════════════════════════════════════════════════════════
+
+HOW TO ADD A PART:
+═══════════════════════════════════════════════════════════════════════════════
+
+METHOD 1: Quick Add (After registering vehicle)
+  1. Click the "Add Part" button immediately after adding vehicle
+  2. It auto-fills the registration number
+  3. Fill in:
+     ✓ Part Name (required) - e.g., "FRONT BAR", "TAIL GATE"
+     ✓ Dealership (optional) - e.g., "PT", "SSS", "ARIF"
+     ✓ Price (optional) - e.g., "250"
+     ✓ Order Date (auto-filled with today)
+     ✓ Expected Delivery (optional) - when should it arrive
+  4. Click "Add Part"
+  5. You're done!
+
+METHOD 2: From Inventory Tab
+  1. Go to "Inventory" tab
+  2. Click "Add Part" button (blue, top right)
+  3. Fill in the form:
+     ✓ Vehicle Registration * (required)
+     ✓ Part Name * (required)
+     ✓ Dealership (optional)
+     ✓ Price (optional)
+     ✓ Order Date (auto-filled)
+     ✓ Expected Delivery (optional)
+  4. Click "Add Part"
+  5. Part appears in your inventory!
+
+═══════════════════════════════════════════════════════════════════════════════
+
+EXAMPLE WORKFLOW:
+═══════════════════════════════════════════════════════════════════════════════
+
+A new car comes into your shop for smash repair:
+
+STEP 1: Register the vehicle
+  • Click "Add Vehicle"
+  • Enter: "1XS3FS" (the registration)
+  • Click "Add Vehicle"
+
+STEP 2: Add first part
+  • Click "Add Part"
+  • Registration auto-fills with "1XS3FS"
+  • Enter Part: "FRONT BAR"
+  • Enter Dealership: "PT"
+  • Enter Price: "450"
+  • Order Date: Today (auto-filled)
+  • Expected: "2026-03-15"
+  • Click "Add Part"
+
+STEP 3: Add second part
+  • Click "Add Part" again
+  • Registration still shows "1XS3FS"
+  • Enter Part: "HEADLIGHT LH"
+  • Enter Dealership: "PT"
+  • Enter Price: "280"
+  • Click "Add Part"
+
+STEP 4: View in Inventory
+  • Go to "Inventory" tab
+  • Search for "1XS3FS"
+  • See both parts listed
+  • As parts arrive, click "Mark Received"
+
+═══════════════════════════════════════════════════════════════════════════════
+
+FIELD EXPLANATIONS:
+═══════════════════════════════════════════════════════════════════════════════
+
+Vehicle Registration *REQUIRED
+  • The license plate or registration number
+  • Examples: "1XS3FS", "ABC123", "U2765"
+  • Used to group parts by car
+
+Part Name *REQUIRED
+  • What part is it?
+  • Examples: "FRONT BAR", "TAIL GATE", "HEADLIGHT"
+  • Be specific so you can find it later
+
+Dealership (OPTIONAL)
+  • Which supplier/dealership are you ordering from?
+  • Examples: "PT", "SSS", "ARIF", "PRESTON TOYOTA"
+  • Helps track which dealers are fast/slow
+
+Price (OPTIONAL)
+  • How much does the part cost?
+  • Just the number: "450"
+  • Helps track expenses per car
+
+Order Date (AUTO-FILLED)
+  • When did you order it?
+  • Auto-filled with today's date
+  • Change it if needed
+
+Expected Delivery (OPTIONAL)
+  • When should it arrive?
+  • Helps identify overdue items
+  • Format: YYYY-MM-DD
+
+═══════════════════════════════════════════════════════════════════════════════
+
+WHAT HAPPENS AFTER YOU ADD:
+═══════════════════════════════════════════════════════════════════════════════
+
+✓ Part appears in Inventory immediately
+✓ Dashboard metrics update automatically
+✓ Status defaults to "Ordered"
+✓ You can mark it "Received" when it arrives
+✓ Can mark for "Return" if not needed
+
+═══════════════════════════════════════════════════════════════════════════════
+
+MANAGING YOUR PARTS:
+═══════════════════════════════════════════════════════════════════════════════
+
+Once added, for each part you can:
+
+✓ Mark Received
+  • Click when the part arrives
+  • Changes status to "Received"
+  • Updates dashboard
+
+✓ Mark for Return
+  • Click if you don't need the part
+  • Changes status to "Return"
+  • Track returns in "Returns Tracker"
+
+✓ View Details
+  • Price, order date, expected date
+  • Dealership info
+  • Days waiting
+
+✓ Search & Filter
+  • Search by part name
+  • Search by registration
+  • Search by dealership
+  • Filter by status (Ordered/Received/Return)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+TIPS:
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Add vehicle first, then parts (faster workflow)
+
+2. Use consistent dealership names:
+   • Decide on "PT" vs "P.T." vs "PT."
+   • Stick with one format
+   • Helps tracking performance
+
+3. Always fill in part name and registration
+   • These are required
+   • Everything else is optional
+
+4. Add expected delivery dates
+   • Helps the app identify overdue items
+   • Lets you follow up with suppliers
+
+5. Update prices when you know them
+   • Improves cost tracking
+   • Helps with customer quotes
+
+═══════════════════════════════════════════════════════════════════════════════
+
+DONE! 🎉
+═══════════════════════════════════════════════════════════════════════════════
+
+You can now add vehicles and parts as they come in!
+
+✅ Add Vehicle → Add Part → Mark Received → Done!
+
+Ready to deploy? Download the updated app! 🚀

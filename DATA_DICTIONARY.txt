@@ -1,0 +1,379 @@
+================================================================================
+DATA DICTIONARY - PARTS MANAGEMENT SYSTEM
+================================================================================
+
+WHAT'S IN YOUR SYSTEM:
+- 959 total parts
+- 169 unique vehicles (by registration)
+- 384 unique part types
+- Data spanning from your 4 Excel files
+
+================================================================================
+MASTER INVENTORY SHEET - COLUMN DETAILS
+================================================================================
+
+REGISTRATION
+  Type: Text (Vehicle registration number)
+  Example: 1XS3FS, U2765, R2855
+  Purpose: Groups parts by vehicle
+  You Update: NO (already in your data)
+  Notes: Some cells might be blank if part wasn't assigned to a vehicle
+
+STATUS
+  Type: Choice field (should be one of: Ordered, Received, Return, Cancelled)
+  Current Values: Mixed (Received, RECEIVED, ordered, etc.)
+  Purpose: Track where each part is in its lifecycle
+  You Update: YES - Change this when parts arrive
+  Example: Change from "Ordered" → "Received" when it shows up
+  
+  Why Standardize:
+  - Dashboard metrics only count exact matches
+  - "Received" won't match "RECEIVED"
+  - Filter/sort works better with consistent values
+
+PARTS NAME
+  Type: Text (Description of the part)
+  Example: TAIL GATE, FRONT BAR, LH HEADLIGHT
+  Purpose: Identify what the part is
+  You Update: NO (already in your data)
+  Notes: Some spelling variations exist (GRILL vs GRILLE, etc.)
+        - This is okay, you know what they mean
+        - Standardizing would help if you add a lookup table later
+
+DEALERSHIP
+  Type: Text (Name/code of dealership that supplied it)
+  Current Values: PT, SSS, ARIF, ADIL, STOCK, LEXUS BLACKBURN, TOYLEX, etc.
+  Example: PT, SSS, ARIF, Lexus Blackburn
+  Purpose: Track which supplier for performance/relationship
+  You Update: YES - Fill blanks and standardize names
+  Incomplete: ~40% of rows are blank
+
+  Standardization Needed:
+  - Pick one format for each dealership
+  - Example: Use "PT" consistently (not "P T", "P.T.", "PT.")
+  - Helps you see which dealers are reliable
+
+PRICE
+  Type: Number (Cost per unit in dollars)
+  Example: 150.50, 289, 1592
+  Purpose: Cost tracking, budgeting, customer quotes
+  You Update: YES - Add where you know them
+  Current: ~15% filled, 85% blank
+  
+  Why Complete This:
+  - Dashboard can show total cost per vehicle
+  - Identify expensive parts for urgent prioritization
+  - Invoice matching (price helps confirm it's the right part)
+
+ORDER DATE
+  Type: Date (YYYY-MM-DD format)
+  Example: 2025-08-21, 2026-03-10
+  Purpose: Know when you ordered things (for supplier follow-up)
+  You Update: YES - Add if you know
+  Current: ~30% filled
+  
+  Why Needed:
+  - "Days Waiting" calculation depends on this
+  - Can identify if supplier is taking too long
+  - Warranty/return periods often start from order date
+
+EXPECTED DELIVERY
+  Type: Date (YYYY-MM-DD format)
+  Example: 2025-08-28, 2025-09-01
+  Purpose: Know when parts SHOULD arrive
+  You Update: YES - Add when you place order
+  Current: ~20% filled
+  
+  Why Important:
+  - Identifies overdue items
+  - Helps plan when to follow up with supplier
+  - Customers want to know ETA
+
+RECEIVED DATE
+  Type: Date (YYYY-MM-DD format)
+  Example: 2025-09-05
+  Purpose: When the part actually arrived
+  You Update: YES - Fill when it arrives
+  Current: ~30% filled
+  
+  How to Use:
+  - When part arrives, enter date in this column AND
+  - Change Status column to "Received"
+  - System auto-calculates "Days Waiting"
+
+DAYS WAITING (AUTO-CALCULATED)
+  Type: Number (days)
+  Formula: =IF(AND(F{row}<>"",H{row}=""), TODAY()-F{row}, "")
+  Meaning: TODAY() - ORDER_DATE, but only if not yet received
+  Purpose: Shows how long you've been waiting
+  You Update: NO - System calculates automatically
+  
+  Example:
+  - Order Date: 2025-08-21
+  - Today: 2025-08-30
+  - Days Waiting: 9 days
+  
+  When to Worry:
+  - >7 days = Follow up with supplier
+  - >14 days = More urgent follow-up
+  - >30 days = Flag for return/replacement
+
+RETURN STATUS
+  Type: Choice field (should be: Return, null/blank)
+  Purpose: Mark items you're sending back
+  You Update: YES - Mark "Return" if not using it
+  Current: Mostly blank (expected)
+  
+  Why Track Returns:
+  - Some parts don't fit/wrong spec
+  - Dealerships need documentation
+  - Refund tracking (for your accounting)
+  - Return Tracker sheet provides full return workflow
+
+NOTES
+  Type: Text (Any notes about this part)
+  Example: "Wrong fit", "Customer rejected", "On backorder"
+  Purpose: Context and communication
+  You Update: YES - Add notes as needed
+  Current: ~5% filled
+  
+  Use Cases:
+  - "Arrived damaged"
+  - "Wrong color"
+  - "Customer changed mind"
+  - "Dealership out of stock until 9/15"
+
+================================================================================
+DASHBOARD SHEET - METRICS EXPLAINED
+================================================================================
+
+TOTAL PARTS ORDERED
+  Formula: =COUNTA('Master Inventory'!C2:C960)
+  What it means: Count of all rows with part names
+  Should equal: 959 (your data)
+  Why: Quick snapshot of workload
+
+PARTS RECEIVED
+  Formula: =COUNTIF('Master Inventory'!B2:B960,"Received")
+  What it means: Count where Status = "Received"
+  Example: If 300 parts have arrived, shows 300
+  Why: See progress at a glance
+
+PARTS PENDING
+  Formula: =COUNTIF('Master Inventory'!B2:B960,"Ordered")
+  What it means: Count where Status = "Ordered"
+  Example: If 659 still waiting, shows 659
+  Why: Know what's still coming
+
+READY TO RETURN
+  Formula: =COUNTIF('Master Inventory'!J2:J960,"Return")
+  What it means: Count where Return Status = "Return"
+  Example: If 5 parts need return, shows 5
+  Why: Know what to send back
+
+OVERDUE ITEMS
+  Formula: =SUMPRODUCT((I2:I960>30)*(B2:B960="Ordered"))
+  What it means: Count of items waiting >30 days AND still Ordered
+  Example: 12 parts waiting over a month
+  Why: Identifies supplier problems, need escalation
+
+================================================================================
+INVOICE TRACKER SHEET - COLUMN DETAILS
+================================================================================
+
+INVOICE DATE
+  Type: Date
+  What to enter: Date on the invoice
+  Purpose: Paper trail, audit trail
+
+INVOICE #
+  Type: Text
+  What to enter: Invoice number from document
+  Purpose: Reference for disputes, accounting
+
+DEALERSHIP
+  Type: Text
+  What to enter: Which dealership/supplier
+  Purpose: Track which supplier sent invoice
+
+REGISTRATION
+  Type: Text
+  What to enter: Which vehicle these parts are for
+  Purpose: Link invoice to vehicle repair
+
+PART NAME
+  Type: Text
+  What to enter: Name of the part
+  Purpose: Identify which part this invoice line item is for
+
+QUANTITY
+  Type: Number
+  What to enter: How many of this part
+  Example: 1, 2, 5
+  Purpose: Multiply by unit price for total
+
+UNIT PRICE
+  Type: Number (currency)
+  What to enter: Price per part
+  Example: 150.50, 289.00
+  Purpose: Verify against Master Inventory Price column
+
+TOTAL
+  Type: Number (currency, auto-calculated)
+  Formula: =Quantity * Unit Price
+  Purpose: Quick verification
+
+STATUS
+  Type: Choice (Logged, Matched, Reconciled)
+  What to enter: Track if invoice is matched to order
+  Purpose: Ensures every invoice ties to a part order
+
+================================================================================
+RETURN TRACKER SHEET - COLUMN DETAILS
+================================================================================
+
+REGISTRATION
+  Type: Text
+  What to enter: Vehicle registration
+  Purpose: Know which car the return is for
+
+PART NAME
+  Type: Text
+  What to enter: What part you're returning
+  Purpose: Clear identification
+
+DEALERSHIP
+  Type: Text
+  What to enter: Which dealership to return to
+  Purpose: Routing for return shipment
+
+REASON
+  Type: Text
+  What to enter: Why you're returning it
+  Example: "Wrong fit", "Damaged", "Customer rejected"
+  Purpose: Documentation for dealership
+
+RETURN DATE
+  Type: Date
+  What to enter: When you're sending it back
+  Purpose: Tracking timeline
+
+RETURNED STATUS
+  Type: Choice (Pending, Sent, Confirmed, Refunded)
+  What to enter: Where it is in return process
+  Purpose: Track return lifecycle
+  Example: "Pending" → "Sent" → "Confirmed" → "Refunded"
+
+REFUND AMOUNT
+  Type: Number (currency)
+  What to enter: How much $ you got back
+  Purpose: Accounting/cost recovery tracking
+
+================================================================================
+STANDARDIZATION RECOMMENDATIONS
+================================================================================
+
+DEALERSHIP NAMES - Standardize to:
+  PT (instead of P T, P.T., PT.)
+  SSS (instead of Sss, sss)
+  ARIF (consistent case)
+  ADIL (consistent case)
+  STOCK (for in-stock items)
+  LEXUS BLACKBURN
+  TOYOTA/etc (brand names)
+
+STATUS VALUES - Use only:
+  "Ordered" - Item ordered, not yet received
+  "Received" - Item arrived at your shop
+  "Return" - Item being returned to dealership
+  "Cancelled" - Order cancelled, no longer needed
+
+TIME TO STANDARDIZE: 1-2 hours
+PAYOFF: All formulas work perfectly, filters work great, reports accurate
+
+================================================================================
+COMMON TASKS
+================================================================================
+
+TASK: I just received parts, how do I log them?
+  1. Find the part in Master Inventory (use Ctrl+F to search)
+  2. In Status column, change to "Received"
+  3. In Received Date column, enter today's date
+  4. Dashboard auto-updates!
+
+TASK: I want to know how many parts are overdue
+  Look at Dashboard sheet → "Overdue Items" metric
+  (Shows parts waiting >30 days)
+
+TASK: I want to return something
+  1. Find part in Master Inventory
+  2. In Return Status column, change to "Return"
+  3. Go to Return Tracker sheet
+  4. Add row with details (reason, dealership, refund amount)
+  5. Track status as it goes back
+
+TASK: I got an invoice, how do I log it?
+  Option A (Manual): Type into Invoice Tracker sheet
+  Option B (Auto): Use Invoice Parser tool to extract automatically
+
+TASK: I want to see costs per vehicle
+  Look at Summary Report sheet
+  (Shows total cost, parts count, pending items per vehicle)
+
+TASK: I want to see which dealership is fastest
+  Dashboard → Dealership Summary section
+  (Shows orders, received, pending per dealership)
+
+================================================================================
+TIPS FOR USING THIS SYSTEM
+================================================================================
+
+1. DAILY (5 minutes)
+   - As parts arrive, mark Status = "Received"
+   - Add Received Date
+   - That's it! Dashboard updates automatically
+
+2. WEEKLY (15 minutes)
+   - Review "Overdue Items" on Dashboard
+   - Send follow-up emails to slow suppliers
+   - Log any invoices received
+
+3. MONTHLY (30 minutes)
+   - Review Summary Report
+   - Identify expensive repairs
+   - Check dealership performance
+   - Prepare status report for customers
+
+4. AS NEEDED
+   - Mark items for return if not needed
+   - Add prices to Master Inventory
+   - Fill in missing dealership names
+   - Update notes with supplier comments
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Q: Dashboard shows wrong numbers
+A: Check that Status values match exactly ("Received" not "RECEIVED")
+   Excel is case-sensitive for COUNTIF formulas
+
+Q: Days Waiting column is blank
+A: Make sure Order Date column has a date
+   Status must = "Ordered" (not "Received")
+   Formula only shows waiting time for undelivered items
+
+Q: Can't find a part
+A: Use Ctrl+F (Find)
+   Sometimes parts are spelled differently
+   Try searching for vehicle registration number instead
+
+Q: Invoice doesn't match any order
+A: Some parts might have been ordered verbally
+   Add a new row to Master Inventory
+   Link it to the invoice
+
+Q: Formulas show #REF! error
+A: Don't delete rows, hide them instead
+   Or ask for help fixing the formulas
+
