@@ -347,6 +347,7 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
   const [addingMake, setAddingMake] = useState(false);
   const [addingModel, setAddingModel] = useState(false);
   const [newName, setNewName]       = useState('');
+  const [makesLoading, setMakesLoading] = useState(false);
 
   const q = search.trim().toLowerCase();
   const filtered = q
@@ -357,12 +358,16 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
       )
     : vehicles;
 
-  async function openAdd() {
+  function openAdd() {
     setReg(''); setMakeId(''); setModelId(''); setModels([]);
     setAddingMake(false); setAddingModel(false); setNewName('');
     setDateIn(new Date().toISOString().slice(0, 10));
-    setMakes(await getMakes());
     setAdding(true);
+    setMakesLoading(true);
+    getMakes()
+      .then(setMakes)
+      .catch(err => console.error('Failed to load makes', err))
+      .finally(() => setMakesLoading(false));
   }
   async function onMakeChange(id) {
     setMakeId(id); setModelId(''); setAddingModel(false);
@@ -468,8 +473,8 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
             {!addingMake ? (
               <div style={{ display: 'flex', gap: 8 }}>
                 <select value={makeId} onChange={e => onMakeChange(e.target.value)}
-                  style={{ ...inputStyle, flex: 1 }}>
-                  <option value="">Select make…</option>
+                  disabled={makesLoading} style={{ ...inputStyle, flex: 1, opacity: makesLoading ? 0.5 : 1 }}>
+                  <option value="">{makesLoading ? 'Loading makes…' : 'Select make…'}</option>
                   {makes.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                 </select>
                 <button onClick={() => { setAddingMake(true); setNewName(''); }} style={addChip} title="Add new make">
