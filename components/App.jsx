@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Search, Car, Plus, Check, X, Package, ChevronLeft,
   Hash, Tag, ChevronRight, RotateCcw, Wrench, LayoutDashboard, Paintbrush, LogOut,
+  Camera,
 } from 'lucide-react';
 
 // ============================================================
@@ -51,7 +52,9 @@ async function addVehicle(v) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(v),
   });
-  return res.json();
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not save the vehicle. Please try again.');
+  return data;
 }
 async function placeOrder(order) {
   const res = await fetch(`/api/vehicles/${order.vehicle_id}/orders`, {
@@ -65,6 +68,15 @@ async function updateOrderStatus(vehicleId, orderId, status) {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status }),
   });
+}
+async function updateOrderInvoicePhoto(vehicleId, orderId, dataUrl) {
+  const res = await fetch(`/api/vehicles/${vehicleId}/orders/${orderId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ invoice_photo: dataUrl }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not save the photo. Please try again.');
+  return data;
 }
 async function getDashboardStats() {
   const res = await fetch('/api/dashboard');
@@ -108,6 +120,42 @@ async function updateVehiclePaintStatus(vehicleId, itemId, status) {
     body: JSON.stringify({ status }),
   });
   return res.json();
+}
+async function getVehiclePhotos(vehicleId) {
+  const res = await fetch(`/api/vehicles/${vehicleId}/photos`);
+  return res.json();
+}
+async function addVehiclePhoto(vehicleId, dataUrl) {
+  const res = await fetch(`/api/vehicles/${vehicleId}/photos`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data_url: dataUrl }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not save the photo. Please try again.');
+  return data;
+}
+async function removeVehiclePhoto(vehicleId, photoId) {
+  await fetch(`/api/vehicles/${vehicleId}/photos/${photoId}`, { method: 'DELETE' });
+}
+
+// Shrink a phone photo to a small JPEG data URL before uploading,
+// so it fits comfortably in the database.
+function fileToResizedDataUrl(file, maxDim = 1280, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width  = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read that image file.')); };
+    img.src = url;
+  });
 }
 
 // ============================================================
@@ -198,6 +246,10 @@ export default function App() {
             onPaint={() => setView('paint')}
             onStatus={async (orderId, status) => {
               await updateOrderStatus(activeVehicle.id, orderId, status);
+              refreshOrders();
+            }}
+            onInvoicePhoto={async (orderId, dataUrl) => {
+              await updateOrderInvoicePhoto(activeVehicle.id, orderId, dataUrl);
               refreshOrders();
             }}
           />
@@ -348,19 +400,26 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
   const [addingModel, setAddingModel] = useState(false);
   const [newName, setNewName]       = useState('');
   const [makesLoading, setMakesLoading] = useState(false);
+  const [saving, setSaving]         = useState(false);
+  const [saveError, setSaveError]   = useState('');
 
   const q = search.trim().toLowerCase();
+  // Without a search the list shows only the last 14 days of vehicles;
+  // searching by rego/make/model looks through all of them.
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 14);
   const filtered = q
     ? vehicles.filter(v =>
         v.registration?.toLowerCase().includes(q) ||
         v.make?.toLowerCase().includes(q) ||
         v.model?.toLowerCase().includes(q)
       )
-    : vehicles;
+    : vehicles.filter(v => new Date(v.date_in || v.created_at) >= cutoff);
 
   function openAdd() {
     setReg(''); setMakeId(''); setModelId(''); setModels([]);
     setAddingMake(false); setAddingModel(false); setNewName('');
+    setSaveError(''); setSaving(false);
     setDateIn(new Date().toISOString().slice(0, 10));
     setAdding(true);
     setMakesLoading(true);
@@ -388,19 +447,26 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
     setModelId(String(m.id));
   }
   async function save() {
-    if (!reg.trim()) return;
+    if (!reg.trim() || saving) return;
     const makeName  = makes.find(m  => String(m.id) === String(makeId))?.name  || '';
     const modelName = models.find(m => String(m.id) === String(modelId))?.name || '';
-    const v = await addVehicle({
-      registration: reg.trim().toUpperCase(),
-      make_id:  makeId  || null,
-      model_id: modelId || null,
-      make:     makeName,
-      model:    modelName,
-      date_in:  dateIn || new Date().toISOString().slice(0, 10),
-    });
-    setAdding(false);
-    onAdded(v);
+    setSaving(true); setSaveError('');
+    try {
+      const v = await addVehicle({
+        registration: reg.trim().toUpperCase(),
+        make_id:  makeId  || null,
+        model_id: modelId || null,
+        make:     makeName,
+        model:    modelName,
+        date_in:  dateIn || new Date().toISOString().slice(0, 10),
+      });
+      setAdding(false);
+      onAdded(v);
+    } catch (err) {
+      setSaveError(err.message || 'Could not save the vehicle. Please try again.');
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -426,19 +492,23 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
           <Plus size={18} /> Add vehicle
         </button>
 
-        {q && (
-          <div style={{ fontSize: 12.5, color: T.dim, margin: '10px 0 0', textAlign: 'right' }}>
-            {filtered.length} result{filtered.length !== 1 ? 's' : ''} for &quot;{search.trim()}&quot;
-          </div>
-        )}
+        <div style={{ fontSize: 12.5, color: T.dim, margin: '10px 0 0', textAlign: 'right' }}>
+          {q
+            ? `${filtered.length} result${filtered.length !== 1 ? 's' : ''} for "${search.trim()}"`
+            : 'Showing last 14 days — search rego to find older vehicles'}
+        </div>
 
         <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
-          {filtered.length === 0 && q ? (
+          {filtered.length === 0 ? (
             <div style={{ textAlign: 'center', color: T.dim, border: `1px dashed ${T.line}`,
               borderRadius: 12, padding: '28px 16px', marginTop: 4 }}>
               <Car size={22} color={T.dim} style={{ marginBottom: 8 }} />
-              <div style={{ fontWeight: 600, color: T.text }}>No vehicles found</div>
-              <div style={{ fontSize: 13, marginTop: 4 }}>Try a different registration or make</div>
+              <div style={{ fontWeight: 600, color: T.text }}>
+                {q ? 'No vehicles found' : 'No vehicles in the last 14 days'}
+              </div>
+              <div style={{ fontSize: 13, marginTop: 4 }}>
+                {q ? 'Try a different registration or make' : 'Search rego to find older vehicles'}
+              </div>
             </div>
           ) : filtered.map(v => (
             <button key={v.id} onClick={() => onOpen(v)} style={cardBtn}
@@ -519,9 +589,16 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
               style={inputStyle} />
           </Field>
 
-          <button onClick={save} disabled={!reg.trim()}
-            style={{ ...primaryBtn, marginTop: 6, opacity: reg.trim() ? 1 : 0.5 }}>
-            <Check size={18} /> Save vehicle
+          {saveError && (
+            <div style={{ fontSize: 13.5, color: '#f472b6', background: 'rgba(244,114,182,.1)',
+              border: '1px solid rgba(244,114,182,.4)', borderRadius: 10, padding: '10px 12px' }}>
+              {saveError}
+            </div>
+          )}
+
+          <button onClick={save} disabled={!reg.trim() || saving}
+            style={{ ...primaryBtn, marginTop: 6, opacity: reg.trim() && !saving ? 1 : 0.5 }}>
+            <Check size={18} /> {saving ? 'Saving…' : 'Save vehicle'}
           </button>
         </Modal>
       )}
@@ -532,9 +609,28 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
 // ------------------------------------------------------------
 // VEHICLE PAGE
 // ------------------------------------------------------------
-function VehiclePage({ vehicle, orders, dealerName, onBack, onAddPart, onPaint, onStatus }) {
+function VehiclePage({ vehicle, orders, dealerName, onBack, onAddPart, onPaint, onStatus, onInvoicePhoto }) {
   const total   = orders.reduce((s, o) => s + (o.unit_price || 0) * (o.quantity || 1), 0);
   const pending = orders.filter(o => o.status === 'ordered').length;
+  const [invoiceBusyId, setInvoiceBusyId]   = useState(null);
+  const [invoiceErrorId, setInvoiceErrorId] = useState(null);
+  const [invoiceError, setInvoiceError]     = useState('');
+
+  async function onPickInvoicePhoto(e, orderId) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setInvoiceBusyId(orderId); setInvoiceErrorId(null);
+    try {
+      const dataUrl = await fileToResizedDataUrl(file);
+      await onInvoicePhoto(orderId, dataUrl);
+    } catch (err) {
+      setInvoiceErrorId(orderId);
+      setInvoiceError(err.message || 'Could not save the photo. Please try again.');
+    } finally {
+      setInvoiceBusyId(null);
+    }
+  }
 
   return (
     <>
@@ -615,6 +711,40 @@ function VehiclePage({ vehicle, orders, dealerName, onBack, onAddPart, onPaint, 
                       </button>
                     )}
                   </div>
+
+                  {o.status === 'received' && (
+                    <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {o.invoice_photo ? (
+                        <div style={{ position: 'relative', width: 52, height: 52, flexShrink: 0 }}>
+                          <img src={o.invoice_photo} alt="Invoice"
+                            style={{ width: '100%', height: '100%', objectFit: 'cover',
+                              borderRadius: 8, border: `1px solid ${T.line}` }} />
+                          <button onClick={() => onInvoicePhoto(o.id, null)} title="Delete invoice photo" style={{
+                            position: 'absolute', top: -6, right: -6, width: 18, height: 18, padding: 0,
+                            borderRadius: 999, border: `1px solid ${T.line}`, background: T.panel,
+                            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}>
+                            <X size={11} color="#f472b6" />
+                          </button>
+                        </div>
+                      ) : (
+                        <label style={{
+                          display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 600,
+                          color: T.dim, cursor: invoiceBusyId === o.id ? 'wait' : 'pointer',
+                          opacity: invoiceBusyId === o.id ? 0.5 : 1,
+                        }}>
+                          <Camera size={15} color={T.accent} />
+                          {invoiceBusyId === o.id ? 'Saving…' : 'Add invoice photo'}
+                          <input type="file" accept="image/*" capture="environment"
+                            onChange={e => onPickInvoicePhoto(e, o.id)}
+                            disabled={invoiceBusyId === o.id} style={{ display: 'none' }} />
+                        </label>
+                      )}
+                    </div>
+                  )}
+                  {invoiceErrorId === o.id && (
+                    <div style={{ fontSize: 12.5, color: '#f472b6', marginTop: 6 }}>{invoiceError}</div>
+                  )}
                 </div>
               );
             })}
@@ -638,8 +768,34 @@ function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
   const [expected, setExpected]     = useState('');
   const [addingNew, setAddingNew]   = useState(false);
   const [newPartName, setNewPartName] = useState('');
+  const [photos, setPhotos]         = useState([]);
+  const [photoBusy, setPhotoBusy]   = useState(false);
+  const [photoError, setPhotoError] = useState('');
 
   useEffect(() => { searchCatalog('').then(setResults); }, []);
+  useEffect(() => {
+    getVehiclePhotos(vehicle.id).then(p => Array.isArray(p) && setPhotos(p)).catch(() => {});
+  }, [vehicle.id]);
+
+  async function onPickPhoto(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setPhotoBusy(true); setPhotoError('');
+    try {
+      const dataUrl = await fileToResizedDataUrl(file);
+      const p = await addVehiclePhoto(vehicle.id, dataUrl);
+      setPhotos(prev => [...prev, p]);
+    } catch (err) {
+      setPhotoError(err.message || 'Could not save the photo. Please try again.');
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+  async function deletePhoto(photoId) {
+    await removeVehiclePhoto(vehicle.id, photoId);
+    setPhotos(prev => prev.filter(p => p.id !== photoId));
+  }
 
   async function run(v) { setTerm(v); setResults(await searchCatalog(v)); setAddingNew(false); }
   function choose(p) {
@@ -678,9 +834,45 @@ function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
         onBack={picked ? () => setPicked(null) : onCancel}
       />
       <div style={{ padding: 18 }}>
+        <SectionLabel>Accident photos ({photos.length}/2)</SectionLabel>
+        <div style={{ display: 'flex', gap: 10, marginBottom: 6 }}>
+          {photos.map(p => (
+            <div key={p.id} style={{ position: 'relative', width: 92, height: 92, flexShrink: 0 }}>
+              <img src={p.data_url} alt="Accident photo"
+                style={{ width: '100%', height: '100%', objectFit: 'cover',
+                  borderRadius: 12, border: `1px solid ${T.line}` }} />
+              <button onClick={() => deletePhoto(p.id)} title="Delete photo" style={{
+                position: 'absolute', top: -6, right: -6, width: 24, height: 24,
+                borderRadius: 999, border: `1px solid ${T.line}`, background: T.panel,
+                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <X size={14} color="#f472b6" />
+              </button>
+            </div>
+          ))}
+          {photos.length < 2 && (
+            <label style={{
+              width: 92, height: 92, borderRadius: 12, border: `1px dashed ${T.line}`,
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+              gap: 6, cursor: photoBusy ? 'wait' : 'pointer', color: T.dim,
+              opacity: photoBusy ? 0.5 : 1, flexShrink: 0,
+            }}>
+              <Camera size={20} color={T.accent} />
+              <span style={{ fontSize: 11.5, fontWeight: 600 }}>
+                {photoBusy ? 'Saving…' : 'Add photo'}
+              </span>
+              <input type="file" accept="image/*" capture="environment"
+                onChange={onPickPhoto} disabled={photoBusy} style={{ display: 'none' }} />
+            </label>
+          )}
+        </div>
+        {photoError && (
+          <div style={{ fontSize: 13, color: '#f472b6', marginBottom: 6 }}>{photoError}</div>
+        )}
+
         {!picked ? (
           <>
-            <div style={searchBox}>
+            <div style={{ ...searchBox, marginTop: 12 }}>
               <Search size={18} color={T.accent} />
               <input autoFocus value={term} onChange={e => run(e.target.value)}
                 placeholder="Search part number or name" style={searchInput} />
