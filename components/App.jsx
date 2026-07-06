@@ -78,6 +78,15 @@ async function updateOrderInvoicePhoto(vehicleId, orderId, dataUrl) {
   if (!res.ok) throw new Error(data?.error || 'Could not save the photo. Please try again.');
   return data;
 }
+async function updateOrderDetails(vehicleId, orderId, fields) {
+  const res = await fetch(`/api/vehicles/${vehicleId}/orders/${orderId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not save changes. Please try again.');
+  return data;
+}
 async function getDashboardStats() {
   const res = await fetch('/api/dashboard');
   return res.json();
@@ -240,6 +249,7 @@ export default function App() {
           <VehiclePage
             vehicle={activeVehicle}
             orders={orders}
+            dealerships={dealerships}
             dealerName={dealerName}
             onBack={() => setView('main')}
             onAddPart={() => setView('add-part')}
@@ -250,6 +260,10 @@ export default function App() {
             }}
             onInvoicePhoto={async (orderId, dataUrl) => {
               await updateOrderInvoicePhoto(activeVehicle.id, orderId, dataUrl);
+              refreshOrders();
+            }}
+            onEditOrder={async (orderId, fields) => {
+              await updateOrderDetails(activeVehicle.id, orderId, fields);
               refreshOrders();
             }}
           />
@@ -609,12 +623,14 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
 // ------------------------------------------------------------
 // VEHICLE PAGE
 // ------------------------------------------------------------
-function VehiclePage({ vehicle, orders, dealerName, onBack, onAddPart, onPaint, onStatus, onInvoicePhoto }) {
+function VehiclePage({ vehicle, orders, dealerships, dealerName, onBack, onAddPart, onPaint, onStatus, onInvoicePhoto, onEditOrder }) {
   const total   = orders.reduce((s, o) => s + (o.unit_price || 0) * (o.quantity || 1), 0);
   const pending = orders.filter(o => o.status === 'ordered').length;
   const [invoiceBusyId, setInvoiceBusyId]   = useState(null);
   const [invoiceErrorId, setInvoiceErrorId] = useState(null);
   const [invoiceError, setInvoiceError]     = useState('');
+  const [editingOrder, setEditingOrder]     = useState(null);
+  const [lightbox, setLightbox]             = useState(null);
 
   async function onPickInvoicePhoto(e, orderId) {
     const file = e.target.files?.[0];
@@ -671,7 +687,8 @@ function VehiclePage({ vehicle, orders, dealerName, onBack, onAddPart, onPaint, 
               return (
                 <div key={o.id} style={{ background: T.panel, border: `1px solid ${T.line}`,
                   borderRadius: 12, padding: '13px 14px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                  <div onClick={() => setEditingOrder(o)} style={{
+                    display: 'flex', justifyContent: 'space-between', gap: 10, cursor: 'pointer' }}>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 600, fontSize: 15 }}>
                         {fmt(o.part_name)}{o.quantity > 1 ? ` ×${o.quantity}` : ''}
@@ -680,10 +697,11 @@ function VehiclePage({ vehicle, orders, dealerName, onBack, onAddPart, onPaint, 
                         <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                           <Hash size={12} />{o.part_number || '—'}
                         </span>
-                        {dealerName(o.dealership_id) && (
-                          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <Tag size={12} />{dealerName(o.dealership_id)}
-                          </span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <Tag size={12} />{dealerName(o.dealership_id) || 'No dealership'}
+                        </span>
+                        {o.unit_price != null && (
+                          <span>${Number(o.unit_price).toFixed(2)}</span>
                         )}
                       </div>
                     </div>
@@ -716,8 +734,8 @@ function VehiclePage({ vehicle, orders, dealerName, onBack, onAddPart, onPaint, 
                     <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
                       {o.invoice_photo ? (
                         <div style={{ position: 'relative', width: 52, height: 52, flexShrink: 0 }}>
-                          <img src={o.invoice_photo} alt="Invoice"
-                            style={{ width: '100%', height: '100%', objectFit: 'cover',
+                          <img src={o.invoice_photo} alt="Invoice" onClick={() => setLightbox(o.invoice_photo)}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer',
                               borderRadius: 8, border: `1px solid ${T.line}` }} />
                           <button onClick={() => onInvoicePhoto(o.id, null)} title="Delete invoice photo" style={{
                             position: 'absolute', top: -6, right: -6, width: 18, height: 18, padding: 0,
@@ -751,7 +769,77 @@ function VehiclePage({ vehicle, orders, dealerName, onBack, onAddPart, onPaint, 
           </div>
         )}
       </div>
+
+      {editingOrder && (
+        <EditOrderModal
+          order={editingOrder}
+          dealerships={dealerships}
+          onCancel={() => setEditingOrder(null)}
+          onSave={async fields => {
+            await onEditOrder(editingOrder.id, fields);
+            setEditingOrder(null);
+          }}
+        />
+      )}
+      {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
     </>
+  );
+}
+
+function EditOrderModal({ order, dealerships, onCancel, onSave }) {
+  const [dealershipId, setDealershipId] = useState(order.dealership_id ? String(order.dealership_id) : '');
+  const [quantity, setQuantity]         = useState(order.quantity ?? 1);
+  const [price, setPrice]               = useState(order.unit_price != null ? String(order.unit_price) : '');
+  const [partNumber, setPartNumber]     = useState(order.part_number || '');
+  const [expected, setExpected]         = useState(order.expected_date ? order.expected_date.slice(0, 10) : '');
+  const [saving, setSaving]             = useState(false);
+  const [error, setError]               = useState('');
+
+  async function save() {
+    setSaving(true); setError('');
+    try {
+      await onSave({
+        dealership_id: dealershipId || null,
+        quantity:       Number(quantity) || 1,
+        unit_price:     price ? Number(price) : null,
+        part_number:    partNumber.trim() || null,
+        expected_date:  expected || null,
+      });
+    } catch (err) {
+      setError(err.message || 'Could not save changes. Please try again.');
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal title={fmt(order.part_name)} onClose={onCancel}>
+      <Field label="Part number">
+        <input value={partNumber} onChange={e => setPartNumber(e.target.value)} style={inputStyle} />
+      </Field>
+      <Field label="Dealership">
+        <select value={dealershipId} onChange={e => setDealershipId(e.target.value)} style={inputStyle}>
+          <option value="">Not set</option>
+          {dealerships.map(d => <option key={d.id} value={String(d.id)}>{d.name}</option>)}
+        </select>
+      </Field>
+      <div style={{ display: 'flex', gap: 12 }}>
+        <Field label="Quantity" style={{ flex: 1 }}>
+          <input type="number" min={1} value={quantity}
+            onChange={e => setQuantity(e.target.value)} style={inputStyle} />
+        </Field>
+        <Field label="Unit price" style={{ flex: 1 }}>
+          <input type="number" step="0.01" value={price}
+            onChange={e => setPrice(e.target.value)} placeholder="0.00" style={inputStyle} />
+        </Field>
+      </div>
+      <Field label="Expected delivery">
+        <input type="date" value={expected} onChange={e => setExpected(e.target.value)} style={inputStyle} />
+      </Field>
+      {error && <div style={{ fontSize: 13, color: '#f472b6' }}>{error}</div>}
+      <button onClick={save} disabled={saving} style={{ ...primaryBtn, opacity: saving ? 0.6 : 1 }}>
+        <Check size={18} /> {saving ? 'Saving…' : 'Save changes'}
+      </button>
+    </Modal>
   );
 }
 
@@ -771,6 +859,7 @@ function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
   const [photos, setPhotos]         = useState([]);
   const [photoBusy, setPhotoBusy]   = useState(false);
   const [photoError, setPhotoError] = useState('');
+  const [lightbox, setLightbox]     = useState(null);
 
   useEffect(() => { searchCatalog('').then(setResults); }, []);
   useEffect(() => {
@@ -838,8 +927,8 @@ function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
         <div style={{ display: 'flex', gap: 10, marginBottom: 6 }}>
           {photos.map(p => (
             <div key={p.id} style={{ position: 'relative', width: 92, height: 92, flexShrink: 0 }}>
-              <img src={p.data_url} alt="Accident photo"
-                style={{ width: '100%', height: '100%', objectFit: 'cover',
+              <img src={p.data_url} alt="Accident photo" onClick={() => setLightbox(p.data_url)}
+                style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer',
                   borderRadius: 12, border: `1px solid ${T.line}` }} />
               <button onClick={() => deletePhoto(p.id)} title="Delete photo" style={{
                 position: 'absolute', top: -6, right: -6, width: 24, height: 24,
@@ -977,6 +1066,7 @@ function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
           </>
         )}
       </div>
+      {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
     </>
   );
 }
@@ -1184,6 +1274,23 @@ function Field({ label, required, children, style }) {
       </div>
       {children}
     </label>
+  );
+}
+
+function Lightbox({ src, onClose }) {
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.9)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 20 }}>
+      <button onClick={onClose} style={{
+        position: 'absolute', top: 16, right: 16, width: 36, height: 36, padding: 0,
+        borderRadius: 999, border: `1px solid ${T.line}`, background: T.panel,
+        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <X size={20} color={T.text} />
+      </button>
+      <img src={src} alt="Full size" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
+        borderRadius: 8 }} />
+    </div>
   );
 }
 
