@@ -246,6 +246,12 @@ function fmt(str) {
   ).join(' ');
 }
 
+// Orders already fetched this session, keyed by vehicle id. Reopening a car
+// paints its parts immediately while a fresh copy is fetched behind them.
+// Dropped for a vehicle whenever we change one of its orders, so the next
+// visit can never show a status we know is out of date.
+const ordersCache = new Map();
+
 // ============================================================
 // ROOT
 // ============================================================
@@ -264,6 +270,9 @@ export default function App() {
   // Optimistic edits that the server hasn't confirmed yet, keyed by order id.
   // A fetch issued before one of these lands would otherwise undo it.
   const unconfirmed = useRef(new Map());
+  // Bumped on every mutation. A fetch that was already in flight when an order
+  // changed carries pre-change rows, so its response is worthless.
+  const cacheEpoch = useRef(0);
 
   useEffect(() => {
     getVehicles().then(setVehicles).catch(() => {});
@@ -272,14 +281,30 @@ export default function App() {
 
   const dealerName = id => dealerships.find(d => String(d.id) === String(id))?.name || null;
 
+  // Call before sending anything that changes a vehicle's orders. Every fetch
+  // still in flight left the server before the change, so it is written off,
+  // and the cached rows can no longer be painted on a revisit.
+  function invalidateOrders(vehicleId) {
+    cacheEpoch.current++;
+    ordersCache.delete(String(vehicleId));
+  }
+
   // `showSkeleton` is off for a background revalidate, where the list on screen
   // is already good enough to keep showing while fresher rows arrive.
   function loadOrders(vehicleId, { showSkeleton = true } = {}) {
     const token = ++ordersReq.current;
+    const epoch = cacheEpoch.current;
     setOrdersLoading(showSkeleton);
     return getOrdersForVehicle(vehicleId)
       .then(rows => {
         if (ordersReq.current !== token) return;
+        // An order changed while this fetch was out, so `rows` predates the
+        // change and mutateOrder has already reconciled that order itself.
+        if (cacheEpoch.current !== epoch) return;
+        // A mutation sent after this fetch may not have reached the server in
+        // time to appear in `rows`, so its patch goes back on top. Only rows
+        // nothing is pending against are worth keeping for the next visit.
+        if (unconfirmed.current.size === 0) ordersCache.set(String(vehicleId), rows);
         setOrders(rows.map(o => (unconfirmed.current.has(o.id)
           ? { ...o, ...unconfirmed.current.get(o.id) }
           : o)));
@@ -289,18 +314,22 @@ export default function App() {
   }
 
   // Switch to the vehicle page straight away and let its parts fill in, rather
-  // than holding the tap until the orders come back.
+  // than holding the tap until the orders come back. A car opened earlier this
+  // session paints its parts at once and refreshes behind them, so returning to
+  // one never costs a skeleton.
   function openVehicle(v) {
+    const cached = ordersCache.get(String(v.id));
     setActiveVehicle(v);
-    setOrders([]);
+    setOrders(cached || []);
     setView('vehicle');
-    loadOrders(v.id);
+    loadOrders(v.id, { showSkeleton: !cached });
   }
 
   // Apply `patch` to one order immediately, run the request, then reconcile with
   // the row the server returns — rolling that single order back if it fails.
   async function mutateOrder(orderId, patch, request) {
     const before = orders.find(o => o.id === orderId);
+    if (activeVehicle) invalidateOrders(activeVehicle.id);
     unconfirmed.current.set(orderId, patch);
     setOrders(cur => cur.map(o => (o.id === orderId ? { ...o, ...patch } : o)));
     try {
@@ -366,6 +395,7 @@ export default function App() {
               // so it belongs last), then refetch: the initial load may still have
               // been in flight and this order page can be reached before it lands.
               if (order) {
+                invalidateOrders(activeVehicle.id);
                 setOrders(cur => [...cur, order]);
                 loadOrders(activeVehicle.id, { showSkeleton: false });
               }
@@ -810,7 +840,10 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
         </div>
 
         {ordersLoading ? (
-          <div style={{ marginTop: 16 }}><Skeleton rows={3} height={92} /></div>
+          <div style={{ marginTop: 16 }}>
+            <LoadingNote>Loading parts…</LoadingNote>
+            <Skeleton rows={3} height={92} />
+          </div>
         ) : orders.length === 0 ? (
           <div style={{ marginTop: 18, textAlign: 'center', color: T.dim,
             border: `1px dashed ${T.line}`, borderRadius: 12, padding: '30px 16px' }}>
@@ -1462,7 +1495,10 @@ function InvoicesPage({ vehicle, onBack }) {
         )}
 
         {loading ? (
-          <div style={{ marginTop: 16 }}><Skeleton rows={2} height={80} /></div>
+          <div style={{ marginTop: 16 }}>
+            <LoadingNote>Loading invoices…</LoadingNote>
+            <Skeleton rows={2} height={80} />
+          </div>
         ) : invoices.length === 0 ? (
           <div style={{ marginTop: 18, textAlign: 'center', color: T.dim,
             border: `1px dashed ${T.line}`, borderRadius: 12, padding: '30px 16px' }}>
@@ -1738,17 +1774,36 @@ function Spinner({ size = 15 }) {
   );
 }
 
-// Grey placeholder rows shown while a list is still in flight, so tapping
-// through to a page shows its shape immediately instead of an empty screen.
+// Placeholder rows shown while a list is still in flight, so tapping through to
+// a page shows its shape immediately instead of an empty screen. A light band
+// sweeps across each row — on this dark theme a dimmed panel is invisible, so
+// the movement is what actually reads as "loading".
 function Skeleton({ rows = 3, height = 76 }) {
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       {Array.from({ length: rows }, (_, i) => (
         <div key={i} style={{
           height, borderRadius: 12, background: T.panel, border: `1px solid ${T.line}`,
-          animation: 'mb-pulse 1.2s ease-in-out infinite', animationDelay: `${i * 0.12}s`,
-        }} />
+          position: 'relative', overflow: 'hidden',
+        }}>
+          <div className="mb-shimmer" style={{
+            position: 'absolute', inset: 0,
+            background: `linear-gradient(90deg, transparent, ${T.panelHi} 45%, ${T.line} 50%, ${T.panelHi} 55%, transparent)`,
+            animation: 'mb-shimmer 1.25s ease-in-out infinite',
+            animationDelay: `${i * 0.14}s`,
+          }} />
+        </div>
       ))}
+    </div>
+  );
+}
+
+// Pairs with Skeleton: says in words what the moving bars only imply.
+function LoadingNote({ children }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+      color: T.accent, fontSize: 13, fontWeight: 600, padding: '4px 0 12px' }}>
+      <Spinner size={14} /> {children}
     </div>
   );
 }

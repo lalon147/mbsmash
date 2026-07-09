@@ -43,11 +43,15 @@ button:disabled {
 }
 
 @keyframes mb-spin { to { transform: rotate(360deg); } }
-@keyframes mb-pulse { 0%, 100% { opacity: .35; } 50% { opacity: .6; } }
+@keyframes mb-shimmer {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
 
 @media (prefers-reduced-motion: reduce) {
   button { transition: none; }
   button:active:not(:disabled) { transform: none; }
+  .mb-shimmer { animation: none !important; }
 }
 
 select option {
