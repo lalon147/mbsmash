@@ -43,8 +43,8 @@ export default function LoginPage() {
 
   return (
     <div style={{
-      minHeight: '100vh', background: T.bg, display: 'flex',
-      alignItems: 'center', justifyContent: 'center',
+      minHeight: '100vh', background: T.bg, display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center', gap: 24,
       fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
       padding: 20,
     }}>
@@ -130,6 +130,23 @@ export default function LoginPage() {
           </button>
         </form>
       </div>
+
+      <footer style={{
+        textAlign: 'center', fontSize: 12, color: T.dim, lineHeight: 1.7,
+      }}>
+        <div>© {new Date().getFullYear()} MB Smash Repair. All rights reserved.</div>
+        <div>
+          Developed by{' '}
+          <a
+            href="https://github.com/lalon147"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: T.accent, fontWeight: 700, textDecoration: 'none' }}
+          >
+            LALON
+          </a>
+        </div>
+      </footer>
     </div>
   );
 }

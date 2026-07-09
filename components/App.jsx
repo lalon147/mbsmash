@@ -417,6 +417,8 @@ export default function App() {
             onBack={() => setView('vehicle')}
           />
         )}
+
+        <Footer />
       </div>
 
       {view === 'main' && (
@@ -1795,6 +1797,29 @@ function Skeleton({ rows = 3, height = 76 }) {
         </div>
       ))}
     </div>
+  );
+}
+
+// Sits under every view. `main` keeps the fixed bottom nav clear of it.
+function Footer() {
+  return (
+    <footer style={{
+      marginTop: 32, padding: '18px 16px 22px', borderTop: `1px solid ${T.line}`,
+      textAlign: 'center', fontSize: 12, color: T.dim, lineHeight: 1.7,
+    }}>
+      <div>© {new Date().getFullYear()} MB Smash Repair. All rights reserved.</div>
+      <div>
+        Developed by{' '}
+        <a
+          href="https://github.com/lalon147"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: T.accent, fontWeight: 700, textDecoration: 'none' }}
+        >
+          LALON
+        </a>
+      </div>
+    </footer>
   );
 }
 
