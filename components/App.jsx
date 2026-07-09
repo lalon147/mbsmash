@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Search, Car, Plus, Check, X, Package, ChevronLeft,
   Hash, Tag, ChevronRight, RotateCcw, Wrench, LayoutDashboard, Paintbrush, LogOut,
@@ -22,14 +22,18 @@ async function addMake(name) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
   });
-  return res.json();
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not add that make. Please try again.');
+  return data;
 }
 async function addModel(makeId, name) {
   const res = await fetch(`/api/makes/${makeId}/models`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
   });
-  return res.json();
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not add that model. Please try again.');
+  return data;
 }
 async function getVehicles() {
   const res = await fetch('/api/vehicles');
@@ -61,13 +65,18 @@ async function placeOrder(order) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(order),
   });
-  return res.json();
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not add the part. Please try again.');
+  return data;
 }
 async function updateOrderStatus(vehicleId, orderId, status) {
-  await fetch(`/api/vehicles/${vehicleId}/orders/${orderId}`, {
+  const res = await fetch(`/api/vehicles/${vehicleId}/orders/${orderId}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status }),
   });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not update the part. Please try again.');
+  return data;
 }
 async function updateOrderInvoicePhoto(vehicleId, orderId, dataUrl) {
   const res = await fetch(`/api/vehicles/${vehicleId}/orders/${orderId}`, {
@@ -96,7 +105,9 @@ async function addCatalogPart(name) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ part_name: name }),
   });
-  return res.json();
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not add that part. Please try again.');
+  return data;
 }
 async function getPaintCatalog() {
   const res = await fetch('/api/paint-catalog');
@@ -118,17 +129,22 @@ async function addVehiclePaintItem(vehicleId, partName) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ part_name: partName }),
   });
-  return res.json();
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not add that paint part. Please try again.');
+  return data;
 }
 async function removeVehiclePaintItem(vehicleId, itemId) {
-  await fetch(`/api/vehicles/${vehicleId}/paint/${itemId}`, { method: 'DELETE' });
+  const res = await fetch(`/api/vehicles/${vehicleId}/paint/${itemId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Could not remove that paint part. Please try again.');
 }
 async function updateVehiclePaintStatus(vehicleId, itemId, status) {
   const res = await fetch(`/api/vehicles/${vehicleId}/paint/${itemId}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status }),
   });
-  return res.json();
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not update that paint part. Please try again.');
+  return data;
 }
 async function getVehiclePhotos(vehicleId) {
   const res = await fetch(`/api/vehicles/${vehicleId}/photos`);
@@ -144,7 +160,8 @@ async function addVehiclePhoto(vehicleId, dataUrl) {
   return data;
 }
 async function removeVehiclePhoto(vehicleId, photoId) {
-  await fetch(`/api/vehicles/${vehicleId}/photos/${photoId}`, { method: 'DELETE' });
+  const res = await fetch(`/api/vehicles/${vehicleId}/photos/${photoId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Could not delete the photo. Please try again.');
 }
 
 // Shrink a phone photo to a small JPEG data URL before uploading,
@@ -209,21 +226,62 @@ export default function App() {
   const [dealerships, setDealerships] = useState([]);
   const [activeVehicle, setActiveVehicle] = useState(null);
   const [orders, setOrders]         = useState([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+
+  // Bumped on every orders fetch so a slow response for a vehicle the user has
+  // already navigated away from can't overwrite the one they're looking at now.
+  const ordersReq = useRef(0);
+  // Optimistic edits that the server hasn't confirmed yet, keyed by order id.
+  // A fetch issued before one of these lands would otherwise undo it.
+  const unconfirmed = useRef(new Map());
 
   useEffect(() => {
-    getVehicles().then(setVehicles);
-    getDealerships().then(setDealerships);
+    getVehicles().then(setVehicles).catch(() => {});
+    getDealerships().then(setDealerships).catch(() => {});
   }, []);
 
   const dealerName = id => dealerships.find(d => String(d.id) === String(id))?.name || null;
 
-  async function openVehicle(v) {
-    setActiveVehicle(v);
-    setOrders(await getOrdersForVehicle(v.id));
-    setView('vehicle');
+  // `showSkeleton` is off for a background revalidate, where the list on screen
+  // is already good enough to keep showing while fresher rows arrive.
+  function loadOrders(vehicleId, { showSkeleton = true } = {}) {
+    const token = ++ordersReq.current;
+    setOrdersLoading(showSkeleton);
+    return getOrdersForVehicle(vehicleId)
+      .then(rows => {
+        if (ordersReq.current !== token) return;
+        setOrders(rows.map(o => (unconfirmed.current.has(o.id)
+          ? { ...o, ...unconfirmed.current.get(o.id) }
+          : o)));
+      })
+      .catch(() => {})
+      .finally(() => { if (ordersReq.current === token) setOrdersLoading(false); });
   }
-  async function refreshOrders() {
-    if (activeVehicle) setOrders(await getOrdersForVehicle(activeVehicle.id));
+
+  // Switch to the vehicle page straight away and let its parts fill in, rather
+  // than holding the tap until the orders come back.
+  function openVehicle(v) {
+    setActiveVehicle(v);
+    setOrders([]);
+    setView('vehicle');
+    loadOrders(v.id);
+  }
+
+  // Apply `patch` to one order immediately, run the request, then reconcile with
+  // the row the server returns — rolling that single order back if it fails.
+  async function mutateOrder(orderId, patch, request) {
+    const before = orders.find(o => o.id === orderId);
+    unconfirmed.current.set(orderId, patch);
+    setOrders(cur => cur.map(o => (o.id === orderId ? { ...o, ...patch } : o)));
+    try {
+      const updated = await request();
+      unconfirmed.current.delete(orderId);
+      if (updated) setOrders(cur => cur.map(o => (o.id === orderId ? updated : o)));
+    } catch (err) {
+      unconfirmed.current.delete(orderId);
+      if (before) setOrders(cur => cur.map(o => (o.id === orderId ? before : o)));
+      throw err;
+    }
   }
 
   return (
@@ -249,23 +307,24 @@ export default function App() {
           <VehiclePage
             vehicle={activeVehicle}
             orders={orders}
+            ordersLoading={ordersLoading}
             dealerships={dealerships}
             dealerName={dealerName}
             onBack={() => setView('main')}
             onAddPart={() => setView('add-part')}
             onPaint={() => setView('paint')}
-            onStatus={async (orderId, status) => {
-              await updateOrderStatus(activeVehicle.id, orderId, status);
-              refreshOrders();
-            }}
-            onInvoicePhoto={async (orderId, dataUrl) => {
-              await updateOrderInvoicePhoto(activeVehicle.id, orderId, dataUrl);
-              refreshOrders();
-            }}
-            onEditOrder={async (orderId, fields) => {
-              await updateOrderDetails(activeVehicle.id, orderId, fields);
-              refreshOrders();
-            }}
+            onStatus={(orderId, status) => mutateOrder(
+              orderId, { status },
+              () => updateOrderStatus(activeVehicle.id, orderId, status),
+            )}
+            onInvoicePhoto={(orderId, dataUrl) => mutateOrder(
+              orderId, { invoice_photo: dataUrl },
+              () => updateOrderInvoicePhoto(activeVehicle.id, orderId, dataUrl),
+            )}
+            onEditOrder={(orderId, fields) => mutateOrder(
+              orderId, fields,
+              () => updateOrderDetails(activeVehicle.id, orderId, fields),
+            )}
           />
         )}
 
@@ -275,7 +334,16 @@ export default function App() {
             dealerships={dealerships}
             dealerName={dealerName}
             onCancel={() => setView('vehicle')}
-            onPlaced={async () => { await refreshOrders(); setView('vehicle'); }}
+            onPlaced={(order) => {
+              // Show the new row straight away (the list is sorted by created_at,
+              // so it belongs last), then refetch: the initial load may still have
+              // been in flight and this order page can be reached before it lands.
+              if (order) {
+                setOrders(cur => [...cur, order]);
+                loadOrders(activeVehicle.id, { showSkeleton: false });
+              }
+              setView('vehicle');
+            }}
           />
         )}
 
@@ -317,12 +385,21 @@ export default function App() {
 // ------------------------------------------------------------
 // DASHBOARD
 // ------------------------------------------------------------
+// Last dashboard payload, kept across tab switches so returning to the tab
+// paints the previous numbers immediately while fresh ones are fetched.
+let dashboardCache = null;
+
 function Dashboard({ onOpenVehicle }) {
-  const [stats, setStats]   = useState(null);
-  const [recent, setRecent] = useState([]);
+  const [stats, setStats]   = useState(dashboardCache?.stats ?? null);
+  const [recent, setRecent] = useState(dashboardCache?.recent ?? []);
 
   useEffect(() => {
-    getDashboardStats().then(d => { setStats(d.stats); setRecent(d.recent); });
+    let alive = true;
+    getDashboardStats().then(d => {
+      dashboardCache = d;
+      if (alive) { setStats(d.stats); setRecent(d.recent); }
+    }).catch(() => {});
+    return () => { alive = false; };
   }, []);
 
   return (
@@ -341,17 +418,23 @@ function Dashboard({ onOpenVehicle }) {
       } />
       <div style={{ padding: 18 }}>
 
-        {stats && (
+        {stats ? (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 22 }}>
             <StatCard label="Vehicles"       value={stats.vehicle_count}   accent="#794ee6" />
             <StatCard label="Parts Pending"  value={stats.pending_count}   accent="#fcd34d" />
             <StatCard label="Received Today" value={stats.received_today}  accent="#a78bfa" />
             <StatCard label="Outstanding"    value={`$${Number(stats.outstanding_cost).toFixed(0)}`} accent="#f472b6" />
           </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 22 }}>
+            <Skeleton rows={2} height={70} />
+            <Skeleton rows={2} height={70} />
+          </div>
         )}
 
         <SectionLabel>Recent Vehicles</SectionLabel>
         <div style={{ display: 'grid', gap: 8 }}>
+          {!stats && recent.length === 0 && <Skeleton rows={3} height={64} />}
           {recent.map(v => (
             <button key={v.id} onClick={() => onOpenVehicle(v)} style={cardBtn}
               onMouseEnter={e => { e.currentTarget.style.borderColor = T.accent; }}
@@ -401,12 +484,16 @@ function StatCard({ label, value, accent }) {
 // ------------------------------------------------------------
 // VEHICLE LIST
 // ------------------------------------------------------------
+// Makes rarely change, so they're fetched once and reused — the Add vehicle
+// modal can then open with the dropdown already populated.
+let makesCache = null;
+
 function VehicleList({ vehicles, onOpen, onAdded }) {
   const [adding, setAdding]         = useState(false);
   const [search, setSearch]         = useState('');
   const [reg, setReg]               = useState('');
   const [dateIn, setDateIn]         = useState('');
-  const [makes, setMakes]           = useState([]);
+  const [makes, setMakes]           = useState(makesCache ?? []);
   const [models, setModels]         = useState([]);
   const [makeId, setMakeId]         = useState('');
   const [modelId, setModelId]       = useState('');
@@ -414,7 +501,6 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
   const [addingModel, setAddingModel] = useState(false);
   const [newName, setNewName]       = useState('');
   const [makesLoading, setMakesLoading] = useState(false);
-  const [saving, setSaving]         = useState(false);
   const [saveError, setSaveError]   = useState('');
 
   const q = search.trim().toLowerCase();
@@ -430,15 +516,22 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
       )
     : vehicles.filter(v => new Date(v.date_in || v.created_at) >= cutoff);
 
+  // Warm the cache in the background so the first Add vehicle tap is instant.
+  useEffect(() => {
+    if (makesCache) return;
+    getMakes().then(rows => { makesCache = rows; setMakes(rows); }).catch(() => {});
+  }, []);
+
   function openAdd() {
     setReg(''); setMakeId(''); setModelId(''); setModels([]);
     setAddingMake(false); setAddingModel(false); setNewName('');
-    setSaveError(''); setSaving(false);
+    setSaveError('');
     setDateIn(new Date().toISOString().slice(0, 10));
     setAdding(true);
+    if (makesCache) return;
     setMakesLoading(true);
     getMakes()
-      .then(setMakes)
+      .then(rows => { makesCache = rows; setMakes(rows); })
       .catch(err => console.error('Failed to load makes', err))
       .finally(() => setMakesLoading(false));
   }
@@ -449,7 +542,9 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
   async function saveNewMake() {
     if (!newName.trim()) return;
     const m = await addMake(newName);
-    setMakes(await getMakes());
+    const rows = await getMakes();
+    makesCache = rows;
+    setMakes(rows);
     setNewName(''); setAddingMake(false);
     onMakeChange(String(m.id));
   }
@@ -461,26 +556,20 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
     setModelId(String(m.id));
   }
   async function save() {
-    if (!reg.trim() || saving) return;
+    if (!reg.trim()) return;
     const makeName  = makes.find(m  => String(m.id) === String(makeId))?.name  || '';
     const modelName = models.find(m => String(m.id) === String(modelId))?.name || '';
-    setSaving(true); setSaveError('');
-    try {
-      const v = await addVehicle({
-        registration: reg.trim().toUpperCase(),
-        make_id:  makeId  || null,
-        model_id: modelId || null,
-        make:     makeName,
-        model:    modelName,
-        date_in:  dateIn || new Date().toISOString().slice(0, 10),
-      });
-      setAdding(false);
-      onAdded(v);
-    } catch (err) {
-      setSaveError(err.message || 'Could not save the vehicle. Please try again.');
-    } finally {
-      setSaving(false);
-    }
+    setSaveError('');
+    const v = await addVehicle({
+      registration: reg.trim().toUpperCase(),
+      make_id:  makeId  || null,
+      model_id: modelId || null,
+      make:     makeName,
+      model:    modelName,
+      date_in:  dateIn || new Date().toISOString().slice(0, 10),
+    });
+    setAdding(false);
+    onAdded(v);
   }
 
   return (
@@ -569,7 +658,14 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
               <div style={{ display: 'flex', gap: 8 }}>
                 <input autoFocus value={newName} onChange={e => setNewName(e.target.value)}
                   placeholder="New make name" style={{ ...inputStyle, flex: 1 }} />
-                <button onClick={saveNewMake} style={addChip}><Check size={16} color={T.accent} /></button>
+                <ActionButton
+                  onClick={saveNewMake}
+                  onError={err => setSaveError(err.message || 'Could not add that make. Please try again.')}
+                  pendingLabel=""
+                  style={{ ...addChip, color: T.accent }}
+                >
+                  <Check size={16} color={T.accent} />
+                </ActionButton>
                 <button onClick={() => setAddingMake(false)} style={addChip}><X size={16} color={T.dim} /></button>
               </div>
             )}
@@ -592,7 +688,14 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
               <div style={{ display: 'flex', gap: 8 }}>
                 <input autoFocus value={newName} onChange={e => setNewName(e.target.value)}
                   placeholder="New model name" style={{ ...inputStyle, flex: 1 }} />
-                <button onClick={saveNewModel} style={addChip}><Check size={16} color={T.accent} /></button>
+                <ActionButton
+                  onClick={saveNewModel}
+                  onError={err => setSaveError(err.message || 'Could not add that model. Please try again.')}
+                  pendingLabel=""
+                  style={{ ...addChip, color: T.accent }}
+                >
+                  <Check size={16} color={T.accent} />
+                </ActionButton>
                 <button onClick={() => setAddingModel(false)} style={addChip}><X size={16} color={T.dim} /></button>
               </div>
             )}
@@ -610,10 +713,15 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
             </div>
           )}
 
-          <button onClick={save} disabled={!reg.trim() || saving}
-            style={{ ...primaryBtn, marginTop: 6, opacity: reg.trim() && !saving ? 1 : 0.5 }}>
-            <Check size={18} /> {saving ? 'Saving…' : 'Save vehicle'}
-          </button>
+          <ActionButton
+            onClick={save}
+            onError={err => setSaveError(err.message || 'Could not save the vehicle. Please try again.')}
+            disabled={!reg.trim()}
+            pendingLabel="Saving…"
+            style={{ ...primaryBtn, marginTop: 6 }}
+          >
+            <Check size={18} /> Save vehicle
+          </ActionButton>
         </Modal>
       )}
     </>
@@ -623,26 +731,49 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
 // ------------------------------------------------------------
 // VEHICLE PAGE
 // ------------------------------------------------------------
-function VehiclePage({ vehicle, orders, dealerships, dealerName, onBack, onAddPart, onPaint, onStatus, onInvoicePhoto, onEditOrder }) {
+function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, onBack, onAddPart, onPaint, onStatus, onInvoicePhoto, onEditOrder }) {
   const total   = orders.reduce((s, o) => s + (o.unit_price || 0) * (o.quantity || 1), 0);
   const pending = orders.filter(o => o.status === 'ordered').length;
   const [invoiceBusyId, setInvoiceBusyId]   = useState(null);
-  const [invoiceErrorId, setInvoiceErrorId] = useState(null);
-  const [invoiceError, setInvoiceError]     = useState('');
+  const [errorId, setErrorId]               = useState(null);
+  const [errorMsg, setErrorMsg]             = useState('');
   const [editingOrder, setEditingOrder]     = useState(null);
   const [lightbox, setLightbox]             = useState(null);
+
+  function failOrder(orderId, err, fallback) {
+    setErrorId(orderId);
+    setErrorMsg(err?.message || fallback);
+  }
+
+  // The badge flips before this resolves, so a failure has to explain the revert.
+  async function changeStatus(orderId, status) {
+    setErrorId(null);
+    try {
+      await onStatus(orderId, status);
+    } catch (err) {
+      failOrder(orderId, err, 'Could not update the part. Please try again.');
+    }
+  }
+
+  async function changeInvoicePhoto(orderId, dataUrl) {
+    setErrorId(null);
+    try {
+      await onInvoicePhoto(orderId, dataUrl);
+    } catch (err) {
+      failOrder(orderId, err, 'Could not save the photo. Please try again.');
+    }
+  }
 
   async function onPickInvoicePhoto(e, orderId) {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    setInvoiceBusyId(orderId); setInvoiceErrorId(null);
+    setInvoiceBusyId(orderId); setErrorId(null);
     try {
       const dataUrl = await fileToResizedDataUrl(file);
-      await onInvoicePhoto(orderId, dataUrl);
+      await changeInvoicePhoto(orderId, dataUrl);
     } catch (err) {
-      setInvoiceErrorId(orderId);
-      setInvoiceError(err.message || 'Could not save the photo. Please try again.');
+      failOrder(orderId, err, 'Could not save the photo. Please try again.');
     } finally {
       setInvoiceBusyId(null);
     }
@@ -657,9 +788,9 @@ function VehiclePage({ vehicle, orders, dealerships, dealerName, onBack, onAddPa
       />
       <div style={{ padding: 18 }}>
         <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-          <Stat label="Parts"   value={orders.length} />
-          <Stat label="Pending" value={pending} />
-          <Stat label="Cost"    value={total ? `$${total.toFixed(0)}` : '—'} />
+          <Stat label="Parts"   value={ordersLoading ? '—' : orders.length} />
+          <Stat label="Pending" value={ordersLoading ? '—' : pending} />
+          <Stat label="Cost"    value={ordersLoading || !total ? '—' : `$${total.toFixed(0)}`} />
         </div>
 
         <div style={{ display: 'flex', gap: 10 }}>
@@ -671,7 +802,9 @@ function VehiclePage({ vehicle, orders, dealerships, dealerName, onBack, onAddPa
           </button>
         </div>
 
-        {orders.length === 0 ? (
+        {ordersLoading ? (
+          <div style={{ marginTop: 16 }}><Skeleton rows={3} height={92} /></div>
+        ) : orders.length === 0 ? (
           <div style={{ marginTop: 18, textAlign: 'center', color: T.dim,
             border: `1px dashed ${T.line}`, borderRadius: 12, padding: '30px 16px' }}>
             <Wrench size={22} color={T.dim} style={{ marginBottom: 8 }} />
@@ -714,17 +847,17 @@ function VehiclePage({ vehicle, orders, dealerships, dealerName, onBack, onAddPa
 
                   <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                     {o.status === 'ordered' && (
-                      <button onClick={() => onStatus(o.id, 'received')} style={miniBtn(T.accent)}>
+                      <button onClick={() => changeStatus(o.id, 'received')} style={miniBtn(T.accent)}>
                         <Check size={14} /> Received
                       </button>
                     )}
                     {o.status !== 'returned' && (
-                      <button onClick={() => onStatus(o.id, 'returned')} style={miniBtn(T.dim)}>
+                      <button onClick={() => changeStatus(o.id, 'returned')} style={miniBtn(T.dim)}>
                         <RotateCcw size={14} /> Return
                       </button>
                     )}
                     {o.status === 'returned' && (
-                      <button onClick={() => onStatus(o.id, 'ordered')} style={miniBtn(T.dim)}>
+                      <button onClick={() => changeStatus(o.id, 'ordered')} style={miniBtn(T.dim)}>
                         Undo
                       </button>
                     )}
@@ -737,7 +870,7 @@ function VehiclePage({ vehicle, orders, dealerships, dealerName, onBack, onAddPa
                           <img src={o.invoice_photo} alt="Invoice" onClick={() => setLightbox(o.invoice_photo)}
                             style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer',
                               borderRadius: 8, border: `1px solid ${T.line}` }} />
-                          <button onClick={() => onInvoicePhoto(o.id, null)} title="Delete invoice photo" style={{
+                          <button onClick={() => changeInvoicePhoto(o.id, null)} title="Delete invoice photo" style={{
                             position: 'absolute', top: -6, right: -6, width: 18, height: 18, padding: 0,
                             borderRadius: 999, border: `1px solid ${T.line}`, background: T.panel,
                             cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -760,8 +893,8 @@ function VehiclePage({ vehicle, orders, dealerships, dealerName, onBack, onAddPa
                       )}
                     </div>
                   )}
-                  {invoiceErrorId === o.id && (
-                    <div style={{ fontSize: 12.5, color: '#f472b6', marginTop: 6 }}>{invoiceError}</div>
+                  {errorId === o.id && (
+                    <div style={{ fontSize: 12.5, color: '#f472b6', marginTop: 6 }}>{errorMsg}</div>
                   )}
                 </div>
               );
@@ -792,23 +925,17 @@ function EditOrderModal({ order, dealerships, onCancel, onSave }) {
   const [price, setPrice]               = useState(order.unit_price != null ? String(order.unit_price) : '');
   const [partNumber, setPartNumber]     = useState(order.part_number || '');
   const [expected, setExpected]         = useState(order.expected_date ? order.expected_date.slice(0, 10) : '');
-  const [saving, setSaving]             = useState(false);
   const [error, setError]               = useState('');
 
   async function save() {
-    setSaving(true); setError('');
-    try {
-      await onSave({
-        dealership_id: dealershipId || null,
-        quantity:       Number(quantity) || 1,
-        unit_price:     price ? Number(price) : null,
-        part_number:    partNumber.trim() || null,
-        expected_date:  expected || null,
-      });
-    } catch (err) {
-      setError(err.message || 'Could not save changes. Please try again.');
-      setSaving(false);
-    }
+    setError('');
+    await onSave({
+      dealership_id: dealershipId || null,
+      quantity:       Number(quantity) || 1,
+      unit_price:     price ? Number(price) : null,
+      part_number:    partNumber.trim() || null,
+      expected_date:  expected || null,
+    });
   }
 
   return (
@@ -836,9 +963,14 @@ function EditOrderModal({ order, dealerships, onCancel, onSave }) {
         <input type="date" value={expected} onChange={e => setExpected(e.target.value)} style={inputStyle} />
       </Field>
       {error && <div style={{ fontSize: 13, color: '#f472b6' }}>{error}</div>}
-      <button onClick={save} disabled={saving} style={{ ...primaryBtn, opacity: saving ? 0.6 : 1 }}>
-        <Check size={18} /> {saving ? 'Saving…' : 'Save changes'}
-      </button>
+      <ActionButton
+        onClick={save}
+        onError={err => setError(err.message || 'Could not save changes. Please try again.')}
+        pendingLabel="Saving…"
+        style={primaryBtn}
+      >
+        <Check size={18} /> Save changes
+      </ActionButton>
     </Modal>
   );
 }
@@ -860,8 +992,21 @@ function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
   const [photoBusy, setPhotoBusy]   = useState(false);
   const [photoError, setPhotoError] = useState('');
   const [lightbox, setLightbox]     = useState(null);
+  const [placeError, setPlaceError] = useState('');
+  const searchReq = useRef(0);
 
-  useEffect(() => { searchCatalog('').then(setResults); }, []);
+  // Debounced so typing doesn't fire a request per keystroke, and stale
+  // responses from earlier terms are dropped rather than replacing newer ones.
+  useEffect(() => {
+    const token = ++searchReq.current;
+    const timer = setTimeout(() => {
+      searchCatalog(term)
+        .then(rows => { if (searchReq.current === token) setResults(rows); })
+        .catch(() => {});
+    }, term ? 180 : 0);
+    return () => clearTimeout(timer);
+  }, [term]);
+
   useEffect(() => {
     getVehiclePhotos(vehicle.id).then(p => Array.isArray(p) && setPhotos(p)).catch(() => {});
   }, [vehicle.id]);
@@ -881,12 +1026,20 @@ function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
       setPhotoBusy(false);
     }
   }
+  // Drop the thumbnail on tap; put it back if the delete didn't land.
   async function deletePhoto(photoId) {
-    await removeVehiclePhoto(vehicle.id, photoId);
+    const before = photos;
     setPhotos(prev => prev.filter(p => p.id !== photoId));
+    setPhotoError('');
+    try {
+      await removeVehiclePhoto(vehicle.id, photoId);
+    } catch (err) {
+      setPhotos(before);
+      setPhotoError(err.message || 'Could not delete the photo. Please try again.');
+    }
   }
 
-  async function run(v) { setTerm(v); setResults(await searchCatalog(v)); setAddingNew(false); }
+  function run(v) { setTerm(v); setAddingNew(false); }
   function choose(p) {
     setPicked(p);
     setDealershipId(p.default_dealership_id ? String(p.default_dealership_id) : '');
@@ -901,7 +1054,8 @@ function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
     choose(p);
   }
   async function confirm() {
-    await placeOrder({
+    setPlaceError('');
+    const order = await placeOrder({
       vehicle_id:      vehicle.id,
       catalog_part_id: picked.id,
       part_name:       picked.part_name,
@@ -912,7 +1066,7 @@ function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
       expected_date:   expected || null,
       status:          'ordered',
     });
-    onPlaced();
+    onPlaced(order);
   }
 
   return (
@@ -1021,7 +1175,9 @@ function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
                     <input autoFocus value={newPartName} onChange={e => setNewPartName(e.target.value)}
                       onKeyDown={e => e.key === 'Enter' && saveNewPart()}
                       placeholder="e.g. FRONT BUMPER" style={{ ...inputStyle, flex: 1 }} />
-                    <button onClick={saveNewPart} style={addChip}><Check size={16} color={T.accent} /></button>
+                    <ActionButton onClick={saveNewPart} pendingLabel="" style={{ ...addChip, color: T.accent }}>
+                      <Check size={16} color={T.accent} />
+                    </ActionButton>
                     <button onClick={() => setAddingNew(false)} style={addChip}><X size={16} color={T.dim} /></button>
                   </div>
                 </div>
@@ -1060,9 +1216,17 @@ function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
               </Field>
             </div>
 
-            <button onClick={confirm} style={{ ...primaryBtn, marginTop: 20 }}>
+            {placeError && (
+              <div style={{ fontSize: 13, color: '#f472b6', marginTop: 12 }}>{placeError}</div>
+            )}
+            <ActionButton
+              onClick={confirm}
+              onError={err => setPlaceError(err.message || 'Could not add the part. Please try again.')}
+              pendingLabel="Adding…"
+              style={{ ...primaryBtn, marginTop: 20 }}
+            >
               <Check size={18} /> Add to {vehicle.registration}
-            </button>
+            </ActionButton>
           </>
         )}
       </div>
@@ -1074,38 +1238,73 @@ function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
 // ------------------------------------------------------------
 // PAINT PAGE
 // ------------------------------------------------------------
+// Placeholder id for a paint item that exists on screen but not yet in the DB.
+const isTempId = id => typeof id === 'string' && id.startsWith('tmp-');
+
 function PaintPage({ vehicle, onBack }) {
   const [catalog, setCatalog]     = useState([]);
   const [items, setItems]         = useState([]);
   const [addingNew, setAddingNew] = useState(false);
   const [newName, setNewName]     = useState('');
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState('');
 
   useEffect(() => {
+    let alive = true;
     Promise.all([getPaintCatalog(), getVehiclePaint(vehicle.id)])
-      .then(([cat, its]) => { setCatalog(cat); setItems(its); });
+      .then(([cat, its]) => { if (alive) { setCatalog(cat); setItems(its); } })
+      .catch(() => {})
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
   }, [vehicle.id]);
 
   const isSelected = name => items.some(i => i.part_name === name);
   const getItem    = name => items.find(i => i.part_name === name);
 
+  // Paint the chip on tap and settle with the server afterwards. A chip whose
+  // insert is still in flight has no real id yet, so it can't be removed.
   async function toggle(partName) {
-    if (isSelected(partName)) {
-      const item = getItem(partName);
-      await removeVehiclePaintItem(vehicle.id, item.id);
-      setItems(prev => prev.filter(i => i.id !== item.id));
+    const existing = getItem(partName);
+    setError('');
+    if (existing) {
+      if (isTempId(existing.id)) return;
+      setItems(prev => prev.filter(i => i.id !== existing.id));
+      try {
+        await removeVehiclePaintItem(vehicle.id, existing.id);
+      } catch (err) {
+        setItems(prev => [...prev, existing]);
+        setError(err.message || 'Could not remove that paint part. Please try again.');
+      }
     } else {
-      const item = await addVehiclePaintItem(vehicle.id, partName);
-      setItems(prev => [...prev, item]);
+      const tempId = `tmp-${partName}`;
+      setItems(prev => [...prev, { id: tempId, part_name: partName, status: 'to_paint' }]);
+      try {
+        const item = await addVehiclePaintItem(vehicle.id, partName);
+        setItems(prev => prev.map(i => (i.id === tempId ? item : i)));
+      } catch (err) {
+        setItems(prev => prev.filter(i => i.id !== tempId));
+        setError(err.message || 'Could not add that paint part. Please try again.');
+      }
     }
   }
 
   async function setStatus(itemId, status) {
-    const updated = await updateVehiclePaintStatus(vehicle.id, itemId, status);
-    setItems(prev => prev.map(i => i.id === updated.id ? updated : i));
+    if (isTempId(itemId)) return;
+    const before = items.find(i => i.id === itemId);
+    setError('');
+    setItems(prev => prev.map(i => (i.id === itemId ? { ...i, status } : i)));
+    try {
+      const updated = await updateVehiclePaintStatus(vehicle.id, itemId, status);
+      setItems(prev => prev.map(i => (i.id === itemId ? updated : i)));
+    } catch (err) {
+      if (before) setItems(prev => prev.map(i => (i.id === itemId ? before : i)));
+      setError(err.message || 'Could not update that paint part. Please try again.');
+    }
   }
 
   async function saveNewPart() {
     if (!newName.trim()) return;
+    setError('');
     const part = await addPaintCatalogPart(newName);
     setCatalog(prev => [...prev, part]);
     setAddingNew(false);
@@ -1123,6 +1322,7 @@ function PaintPage({ vehicle, onBack }) {
       <div style={{ padding: 18 }}>
 
         <SectionLabel>Tap to select parts to paint</SectionLabel>
+        {loading && <div style={{ marginBottom: 16 }}><Skeleton rows={2} height={38} /></div>}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
           {catalog.map(p => {
             const active    = isSelected(p.part_name);
@@ -1156,9 +1356,20 @@ function PaintPage({ vehicle, onBack }) {
             <input autoFocus value={newName} onChange={e => setNewName(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && saveNewPart()}
               placeholder="e.g. SPOILER" style={{ ...inputStyle, flex: 1 }} />
-            <button onClick={saveNewPart} style={addChip}><Check size={16} color={T.accent} /></button>
+            <ActionButton
+              onClick={saveNewPart}
+              onError={err => setError(err.message || 'Could not add that paint part. Please try again.')}
+              pendingLabel=""
+              style={{ ...addChip, color: T.accent }}
+            >
+              <Check size={16} color={T.accent} />
+            </ActionButton>
             <button onClick={() => setAddingNew(false)} style={addChip}><X size={16} color={T.dim} /></button>
           </div>
+        )}
+
+        {error && (
+          <div style={{ fontSize: 13, color: '#f472b6', marginBottom: 16 }}>{error}</div>
         )}
 
         {toPaint.length > 0 && (
@@ -1203,7 +1414,7 @@ function PaintPage({ vehicle, onBack }) {
           </>
         )}
 
-        {items.length === 0 && (
+        {!loading && items.length === 0 && (
           <div style={{ marginTop: 8, textAlign: 'center', color: T.dim,
             border: `1px dashed ${T.line}`, borderRadius: 12, padding: '28px 16px' }}>
             <Paintbrush size={22} color={T.dim} style={{ marginBottom: 8 }} />
@@ -1253,6 +1464,64 @@ function SectionLabel({ children }) {
       textTransform: 'uppercase', marginBottom: 10 }}>
       {children}
     </div>
+  );
+}
+
+function Spinner({ size = 15 }) {
+  return (
+    <span style={{
+      width: size, height: size, borderRadius: '50%', flexShrink: 0,
+      border: '2px solid currentColor', borderTopColor: 'transparent',
+      display: 'inline-block', animation: 'mb-spin .6s linear infinite',
+    }} />
+  );
+}
+
+// Grey placeholder rows shown while a list is still in flight, so tapping
+// through to a page shows its shape immediately instead of an empty screen.
+function Skeleton({ rows = 3, height = 76 }) {
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} style={{
+          height, borderRadius: 12, background: T.panel, border: `1px solid ${T.line}`,
+          animation: 'mb-pulse 1.2s ease-in-out infinite', animationDelay: `${i * 0.12}s`,
+        }} />
+      ))}
+    </div>
+  );
+}
+
+// Wraps an async click handler: swaps in a spinner while the request is in
+// flight and swallows repeat taps, so a slow round trip can't be double-fired.
+function ActionButton({ onClick, onError, children, pendingLabel = 'Saving…', style, disabled, ...rest }) {
+  const [pending, setPending] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+
+  async function handleClick(e) {
+    if (pending || disabled) return;
+    setPending(true);
+    try {
+      await onClick(e);
+    } catch (err) {
+      if (onError) onError(err);
+      else console.error(err);
+    } finally {
+      if (mounted.current) setPending(false);
+    }
+  }
+
+  const inactive = pending || disabled;
+  return (
+    <button
+      {...rest}
+      onClick={handleClick}
+      disabled={inactive}
+      style={{ ...style, opacity: inactive ? 0.6 : (style?.opacity ?? 1) }}
+    >
+      {pending ? <><Spinner /> {pendingLabel}</> : children}
+    </button>
   );
 }
 

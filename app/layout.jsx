@@ -1,3 +1,5 @@
+import './globals.css';
+
 export const metadata = {
   title: 'MB Smash Repair',
   description: 'Parts ordering system',

@@ -29,9 +29,25 @@ input[type="number"]::-webkit-outer-spin-button {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #4d3291; border-radius: 99px; }
 
+button {
+  transition: transform .08s ease, opacity .12s ease;
+}
+
 button:active:not(:disabled) {
   opacity: 0.82;
   transform: scale(0.97);
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+@keyframes mb-spin { to { transform: rotate(360deg); } }
+@keyframes mb-pulse { 0%, 100% { opacity: .35; } 50% { opacity: .6; } }
+
+@media (prefers-reduced-motion: reduce) {
+  button { transition: none; }
+  button:active:not(:disabled) { transform: none; }
 }
 
 select option {
