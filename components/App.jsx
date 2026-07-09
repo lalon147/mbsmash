@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Search, Car, Plus, Check, X, Package, ChevronLeft,
   Hash, Tag, ChevronRight, RotateCcw, Wrench, LayoutDashboard, Paintbrush, LogOut,
-  Camera,
+  Camera, Receipt,
 } from 'lucide-react';
 
 // ============================================================
@@ -76,15 +76,6 @@ async function updateOrderStatus(vehicleId, orderId, status) {
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.error || 'Could not update the part. Please try again.');
-  return data;
-}
-async function updateOrderInvoicePhoto(vehicleId, orderId, dataUrl) {
-  const res = await fetch(`/api/vehicles/${vehicleId}/orders/${orderId}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ invoice_photo: dataUrl }),
-  });
-  const data = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(data?.error || 'Could not save the photo. Please try again.');
   return data;
 }
 async function updateOrderDetails(vehicleId, orderId, fields) {
@@ -162,6 +153,45 @@ async function addVehiclePhoto(vehicleId, dataUrl) {
 async function removeVehiclePhoto(vehicleId, photoId) {
   const res = await fetch(`/api/vehicles/${vehicleId}/photos/${photoId}`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Could not delete the photo. Please try again.');
+}
+async function getInvoiceTypes() {
+  const res = await fetch('/api/invoice-types');
+  return res.json();
+}
+async function addInvoiceType(name) {
+  const res = await fetch('/api/invoice-types', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not add that invoice type. Please try again.');
+  return data;
+}
+async function getVehicleInvoices(vehicleId) {
+  const res = await fetch(`/api/vehicles/${vehicleId}/invoices`);
+  return res.json();
+}
+async function addVehicleInvoice(vehicleId, invoice) {
+  const res = await fetch(`/api/vehicles/${vehicleId}/invoices`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(invoice),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not save the invoice. Please try again.');
+  return data;
+}
+async function updateVehicleInvoice(vehicleId, invoiceId, fields) {
+  const res = await fetch(`/api/vehicles/${vehicleId}/invoices/${invoiceId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not save changes. Please try again.');
+  return data;
+}
+async function removeVehicleInvoice(vehicleId, invoiceId) {
+  const res = await fetch(`/api/vehicles/${vehicleId}/invoices/${invoiceId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Could not delete the invoice. Please try again.');
 }
 
 // Shrink a phone photo to a small JPEG data URL before uploading,
@@ -313,13 +343,10 @@ export default function App() {
             onBack={() => setView('main')}
             onAddPart={() => setView('add-part')}
             onPaint={() => setView('paint')}
+            onInvoices={() => setView('invoices')}
             onStatus={(orderId, status) => mutateOrder(
               orderId, { status },
               () => updateOrderStatus(activeVehicle.id, orderId, status),
-            )}
-            onInvoicePhoto={(orderId, dataUrl) => mutateOrder(
-              orderId, { invoice_photo: dataUrl },
-              () => updateOrderInvoicePhoto(activeVehicle.id, orderId, dataUrl),
             )}
             onEditOrder={(orderId, fields) => mutateOrder(
               orderId, fields,
@@ -349,6 +376,13 @@ export default function App() {
 
         {view === 'paint' && activeVehicle && (
           <PaintPage
+            vehicle={activeVehicle}
+            onBack={() => setView('vehicle')}
+          />
+        )}
+
+        {view === 'invoices' && activeVehicle && (
+          <InvoicesPage
             vehicle={activeVehicle}
             onBack={() => setView('vehicle')}
           />
@@ -731,19 +765,12 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
 // ------------------------------------------------------------
 // VEHICLE PAGE
 // ------------------------------------------------------------
-function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, onBack, onAddPart, onPaint, onStatus, onInvoicePhoto, onEditOrder }) {
+function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, onBack, onAddPart, onPaint, onInvoices, onStatus, onEditOrder }) {
   const total   = orders.reduce((s, o) => s + (o.unit_price || 0) * (o.quantity || 1), 0);
   const pending = orders.filter(o => o.status === 'ordered').length;
-  const [invoiceBusyId, setInvoiceBusyId]   = useState(null);
   const [errorId, setErrorId]               = useState(null);
   const [errorMsg, setErrorMsg]             = useState('');
   const [editingOrder, setEditingOrder]     = useState(null);
-  const [lightbox, setLightbox]             = useState(null);
-
-  function failOrder(orderId, err, fallback) {
-    setErrorId(orderId);
-    setErrorMsg(err?.message || fallback);
-  }
 
   // The badge flips before this resolves, so a failure has to explain the revert.
   async function changeStatus(orderId, status) {
@@ -751,31 +778,8 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
     try {
       await onStatus(orderId, status);
     } catch (err) {
-      failOrder(orderId, err, 'Could not update the part. Please try again.');
-    }
-  }
-
-  async function changeInvoicePhoto(orderId, dataUrl) {
-    setErrorId(null);
-    try {
-      await onInvoicePhoto(orderId, dataUrl);
-    } catch (err) {
-      failOrder(orderId, err, 'Could not save the photo. Please try again.');
-    }
-  }
-
-  async function onPickInvoicePhoto(e, orderId) {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    setInvoiceBusyId(orderId); setErrorId(null);
-    try {
-      const dataUrl = await fileToResizedDataUrl(file);
-      await changeInvoicePhoto(orderId, dataUrl);
-    } catch (err) {
-      failOrder(orderId, err, 'Could not save the photo. Please try again.');
-    } finally {
-      setInvoiceBusyId(null);
+      setErrorId(orderId);
+      setErrorMsg(err?.message || 'Could not update the part. Please try again.');
     }
   }
 
@@ -793,12 +797,15 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
           <Stat label="Cost"    value={ordersLoading || !total ? '—' : `$${total.toFixed(0)}`} />
         </div>
 
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={onAddPart} style={{ ...primaryBtn, flex: 1 }}>
-            <Plus size={18} /> Order part
-          </button>
+        <button onClick={onAddPart} style={primaryBtn}>
+          <Plus size={18} /> Order part
+        </button>
+        <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
           <button onClick={onPaint} style={{ ...outlineBtn, flex: 1 }}>
             <Paintbrush size={18} /> Paint
+          </button>
+          <button onClick={onInvoices} style={{ ...outlineBtn, flex: 1 }}>
+            <Receipt size={18} /> Invoices
           </button>
         </div>
 
@@ -863,36 +870,6 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
                     )}
                   </div>
 
-                  {o.status === 'received' && (
-                    <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-                      {o.invoice_photo ? (
-                        <div style={{ position: 'relative', width: 52, height: 52, flexShrink: 0 }}>
-                          <img src={o.invoice_photo} alt="Invoice" onClick={() => setLightbox(o.invoice_photo)}
-                            style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer',
-                              borderRadius: 8, border: `1px solid ${T.line}` }} />
-                          <button onClick={() => changeInvoicePhoto(o.id, null)} title="Delete invoice photo" style={{
-                            position: 'absolute', top: -6, right: -6, width: 18, height: 18, padding: 0,
-                            borderRadius: 999, border: `1px solid ${T.line}`, background: T.panel,
-                            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          }}>
-                            <X size={11} color="#f472b6" />
-                          </button>
-                        </div>
-                      ) : (
-                        <label style={{
-                          display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 600,
-                          color: T.dim, cursor: invoiceBusyId === o.id ? 'wait' : 'pointer',
-                          opacity: invoiceBusyId === o.id ? 0.5 : 1,
-                        }}>
-                          <Camera size={15} color={T.accent} />
-                          {invoiceBusyId === o.id ? 'Saving…' : 'Add invoice photo'}
-                          <input type="file" accept="image/*" capture="environment"
-                            onChange={e => onPickInvoicePhoto(e, o.id)}
-                            disabled={invoiceBusyId === o.id} style={{ display: 'none' }} />
-                        </label>
-                      )}
-                    </div>
-                  )}
                   {errorId === o.id && (
                     <div style={{ fontSize: 12.5, color: '#f472b6', marginTop: 6 }}>{errorMsg}</div>
                   )}
@@ -914,7 +891,6 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
           }}
         />
       )}
-      {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
     </>
   );
 }
@@ -1424,6 +1400,291 @@ function PaintPage({ vehicle, onBack }) {
         )}
       </div>
     </>
+  );
+}
+
+// ------------------------------------------------------------
+// INVOICES PAGE
+// ------------------------------------------------------------
+function InvoicesPage({ vehicle, onBack }) {
+  const [types, setTypes]         = useState([]);
+  const [invoices, setInvoices]   = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [adding, setAdding]       = useState(false);
+  const [lightbox, setLightbox]   = useState(null);
+  const [editing, setEditing]     = useState(null);
+  const [error, setError]         = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([getInvoiceTypes(), getVehicleInvoices(vehicle.id)])
+      .then(([ts, inv]) => { if (alive) { setTypes(ts); setInvoices(inv); } })
+      .catch(() => {})
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [vehicle.id]);
+
+  const total = invoices.reduce((s, i) => s + Number(i.amount || 0), 0);
+
+  // Group by type so the workshop can see, per car, what's been invoiced.
+  const byType = types
+    .map(t => ({ type: t, rows: invoices.filter(i => String(i.invoice_type_id) === String(t.id)) }))
+    .filter(g => g.rows.length > 0);
+  const untyped = invoices.filter(i => !i.invoice_type_id);
+
+  async function remove(invoiceId) {
+    const before = invoices;
+    setError('');
+    setInvoices(prev => prev.filter(i => i.id !== invoiceId));
+    try {
+      await removeVehicleInvoice(vehicle.id, invoiceId);
+    } catch (err) {
+      setInvoices(before);
+      setError(err.message || 'Could not delete the invoice. Please try again.');
+    }
+  }
+
+  return (
+    <>
+      <Header title="Invoices" subtitle={`for ${vehicle.registration}`} onBack={onBack} />
+      <div style={{ padding: 18 }}>
+        <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+          <Stat label="Invoices" value={loading ? '—' : invoices.length} />
+          <Stat label="Total"    value={loading || !total ? '—' : `$${total.toFixed(0)}`} />
+        </div>
+
+        <button onClick={() => setAdding(true)} style={primaryBtn}>
+          <Plus size={18} /> Add invoice
+        </button>
+
+        {error && (
+          <div style={{ fontSize: 13, color: '#f472b6', marginTop: 12 }}>{error}</div>
+        )}
+
+        {loading ? (
+          <div style={{ marginTop: 16 }}><Skeleton rows={2} height={80} /></div>
+        ) : invoices.length === 0 ? (
+          <div style={{ marginTop: 18, textAlign: 'center', color: T.dim,
+            border: `1px dashed ${T.line}`, borderRadius: 12, padding: '30px 16px' }}>
+            <Receipt size={22} color={T.dim} style={{ marginBottom: 8 }} />
+            <div style={{ fontWeight: 600, color: T.text }}>No invoices yet</div>
+            <div style={{ fontSize: 13, marginTop: 4 }}>
+              Snap parts, wheel alignment and calibration invoices as they come in.
+            </div>
+          </div>
+        ) : (
+          <div style={{ marginTop: 20 }}>
+            {[...byType, ...(untyped.length ? [{ type: { id: 'none', name: 'Uncategorised' }, rows: untyped }] : [])]
+              .map(({ type, rows }) => (
+                <div key={type.id} style={{ marginBottom: 20 }}>
+                  <SectionLabel>
+                    {type.name} — ${rows.reduce((s, r) => s + Number(r.amount || 0), 0).toFixed(0)}
+                  </SectionLabel>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {rows.map(inv => (
+                      <InvoiceCard
+                        key={inv.id}
+                        invoice={inv}
+                        onOpenPhoto={() => setLightbox(inv.photo)}
+                        onEdit={() => setEditing(inv)}
+                        onDelete={() => remove(inv.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+          </div>
+        )}
+      </div>
+
+      {adding && (
+        <InvoiceModal
+          title="Add invoice"
+          types={types}
+          onClose={() => setAdding(false)}
+          onTypeAdded={t => setTypes(prev => [...prev, t])}
+          onSave={async fields => {
+            const created = await addVehicleInvoice(vehicle.id, fields);
+            setInvoices(prev => [created, ...prev]);
+            setAdding(false);
+          }}
+        />
+      )}
+
+      {editing && (
+        <InvoiceModal
+          title="Edit invoice"
+          types={types}
+          invoice={editing}
+          onClose={() => setEditing(null)}
+          onTypeAdded={t => setTypes(prev => [...prev, t])}
+          onSave={async fields => {
+            const updated = await updateVehicleInvoice(vehicle.id, editing.id, fields);
+            setInvoices(prev => prev.map(i => (i.id === updated.id ? updated : i)));
+            setEditing(null);
+          }}
+        />
+      )}
+
+      {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
+    </>
+  );
+}
+
+function InvoiceCard({ invoice, onOpenPhoto, onEdit, onDelete }) {
+  return (
+    <div style={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12,
+      padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
+      {invoice.photo ? (
+        <img src={invoice.photo} alt="Invoice" onClick={onOpenPhoto}
+          style={{ width: 52, height: 52, objectFit: 'cover', cursor: 'pointer', flexShrink: 0,
+            borderRadius: 8, border: `1px solid ${T.line}` }} />
+      ) : (
+        <div style={{ width: 52, height: 52, borderRadius: 8, border: `1px dashed ${T.line}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <Receipt size={18} color={T.dim} />
+        </div>
+      )}
+
+      <div onClick={onEdit} style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}>
+        <div style={{ fontWeight: 700, fontSize: 16 }}>
+          {invoice.amount != null ? `$${Number(invoice.amount).toFixed(2)}` : 'No amount'}
+        </div>
+        <div style={{ fontSize: 12.5, color: T.dim, marginTop: 2 }}>
+          {invoice.invoice_date ? invoice.invoice_date.slice(0, 10) : 'No date'}
+        </div>
+      </div>
+
+      <button onClick={onDelete} title="Delete invoice" style={iconBtn}>
+        <X size={16} color="#f472b6" />
+      </button>
+    </div>
+  );
+}
+
+function InvoiceModal({ title, types, invoice, onClose, onSave, onTypeAdded }) {
+  const [typeId, setTypeId]     = useState(invoice?.invoice_type_id ? String(invoice.invoice_type_id) : (types[0] ? String(types[0].id) : ''));
+  const [amount, setAmount]     = useState(invoice?.amount != null ? String(invoice.amount) : '');
+  const [date, setDate]         = useState(invoice?.invoice_date ? invoice.invoice_date.slice(0, 10) : new Date().toISOString().slice(0, 10));
+  const [photo, setPhoto]       = useState(invoice?.photo || null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [addingType, setAddingType] = useState(false);
+  const [newType, setNewType]   = useState('');
+  const [error, setError]       = useState('');
+
+  async function onPickPhoto(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setPhotoBusy(true); setError('');
+    try {
+      setPhoto(await fileToResizedDataUrl(file));
+    } catch (err) {
+      setError(err.message || 'Could not read that image.');
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
+  async function saveNewType() {
+    if (!newType.trim()) return;
+    const t = await addInvoiceType(newType);
+    onTypeAdded(t);
+    setTypeId(String(t.id));
+    setNewType(''); setAddingType(false);
+  }
+
+  async function save() {
+    setError('');
+    await onSave({
+      invoice_type_id: typeId || null,
+      amount:          amount === '' ? null : Number(amount),
+      invoice_date:    date || null,
+      photo:           photo || null,
+    });
+  }
+
+  return (
+    <Modal title={title} onClose={onClose}>
+      <Field label="Type" required>
+        {!addingType ? (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <select value={typeId} onChange={e => setTypeId(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
+              <option value="">Select type…</option>
+              {types.map(t => <option key={t.id} value={String(t.id)}>{t.name}</option>)}
+            </select>
+            <button onClick={() => { setAddingType(true); setNewType(''); }} style={addChip} title="Add new type">
+              <Plus size={16} color={T.accent} />
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input autoFocus value={newType} onChange={e => setNewType(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && saveNewType()}
+              placeholder="e.g. Windscreen" style={{ ...inputStyle, flex: 1 }} />
+            <ActionButton
+              onClick={saveNewType}
+              onError={err => setError(err.message || 'Could not add that type.')}
+              pendingLabel=""
+              style={{ ...addChip, color: T.accent }}
+            >
+              <Check size={16} color={T.accent} />
+            </ActionButton>
+            <button onClick={() => setAddingType(false)} style={addChip}><X size={16} color={T.dim} /></button>
+          </div>
+        )}
+      </Field>
+
+      <div style={{ display: 'flex', gap: 12 }}>
+        <Field label="Amount" style={{ flex: 1 }}>
+          <input type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)}
+            placeholder="0.00" style={inputStyle} />
+        </Field>
+        <Field label="Invoice date" style={{ flex: 1 }}>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} style={inputStyle} />
+        </Field>
+      </div>
+
+      <Field label="Photo">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {photo && (
+            <div style={{ position: 'relative', width: 72, height: 72, flexShrink: 0 }}>
+              <img src={photo} alt="Invoice" style={{ width: '100%', height: '100%', objectFit: 'cover',
+                borderRadius: 10, border: `1px solid ${T.line}` }} />
+              <button onClick={() => setPhoto(null)} title="Remove photo" style={{
+                position: 'absolute', top: -6, right: -6, width: 22, height: 22, padding: 0,
+                borderRadius: 999, border: `1px solid ${T.line}`, background: T.panel,
+                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <X size={13} color="#f472b6" />
+              </button>
+            </div>
+          )}
+          <label style={{
+            display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600,
+            color: T.dim, cursor: photoBusy ? 'wait' : 'pointer', opacity: photoBusy ? 0.5 : 1,
+            border: `1px dashed ${T.line}`, borderRadius: 10, padding: '12px 14px',
+          }}>
+            <Camera size={16} color={T.accent} />
+            {photoBusy ? 'Reading…' : photo ? 'Replace photo' : 'Add photo'}
+            <input type="file" accept="image/*" capture="environment"
+              onChange={onPickPhoto} disabled={photoBusy} style={{ display: 'none' }} />
+          </label>
+        </div>
+      </Field>
+
+      {error && <div style={{ fontSize: 13, color: '#f472b6' }}>{error}</div>}
+
+      <ActionButton
+        onClick={save}
+        onError={err => setError(err.message || 'Could not save the invoice. Please try again.')}
+        disabled={!typeId}
+        pendingLabel="Saving…"
+        style={primaryBtn}
+      >
+        <Check size={18} /> {invoice ? 'Save changes' : 'Save invoice'}
+      </ActionButton>
+    </Modal>
   );
 }
 
