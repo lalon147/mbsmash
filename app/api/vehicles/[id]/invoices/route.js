@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import pool from '@/lib/db';
+import { getSessionUser, unauthorized } from '@/lib/session';
+import { withAudit, logChange } from '@/lib/audit';
 
 // Photos are resized client-side to ~1280px JPEG; anything bigger than this
 // means the resize was skipped and the row would bloat the table.
@@ -13,13 +15,16 @@ export async function GET(request, { params }) {
      LEFT JOIN invoice_types it ON it.id = vi.invoice_type_id
      WHERE vi.vehicle_id = $1
      ORDER BY vi.invoice_date DESC NULLS LAST, vi.created_at DESC`,
-    [id]
+    [id],
   );
   return NextResponse.json(rows);
 }
 
 export async function POST(request, { params }) {
   const { id } = await params;
+  const user = await getSessionUser(request);
+  if (!user) return unauthorized();
+
   try {
     const { invoice_type_id, amount, invoice_date, photo } = await request.json();
 
@@ -30,25 +35,34 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: 'Pick an invoice type.' }, { status: 400 });
     }
 
-    const { rows } = await pool.query(
-      `INSERT INTO vehicle_invoices (vehicle_id, invoice_type_id, amount, invoice_date, photo)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING *,
-         (SELECT name FROM invoice_types WHERE id = $2) AS type_name`,
-      [
-        id,
-        invoice_type_id,
-        amount === '' || amount == null ? null : Number(amount),
-        invoice_date || null,
-        photo || null,
-      ]
-    );
-    return NextResponse.json(rows[0], { status: 201 });
+    const created = await withAudit(async client => {
+      const { rows: [invoice] } = await client.query(
+        `INSERT INTO vehicle_invoices (vehicle_id, invoice_type_id, amount, invoice_date, photo)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING *,
+           (SELECT name FROM invoice_types WHERE id = $2) AS type_name`,
+        [
+          id,
+          invoice_type_id,
+          amount === '' || amount == null ? null : Number(amount),
+          invoice_date || null,
+          photo || null,
+        ],
+      );
+
+      await logChange(client, {
+        entityType: 'invoice', entityId: invoice.id, vehicleId: Number(id),
+        user, action: 'created',
+      });
+      return invoice;
+    });
+
+    return NextResponse.json(created, { status: 201 });
   } catch (err) {
     console.error('POST /api/vehicles/[id]/invoices failed:', err);
     return NextResponse.json(
       { error: 'Could not save the invoice. Please try again.' },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

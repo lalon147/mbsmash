@@ -1,9 +1,9 @@
 'use client';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Search, Car, Plus, Check, X, Package, ChevronLeft,
   Hash, Tag, ChevronRight, RotateCcw, Wrench, LayoutDashboard, Paintbrush, LogOut,
-  Camera, Receipt,
+  Camera, Receipt, History, ChevronDown,
 } from 'lucide-react';
 
 // ============================================================
@@ -193,6 +193,15 @@ async function removeVehicleInvoice(vehicleId, invoiceId) {
   const res = await fetch(`/api/vehicles/${vehicleId}/invoices/${invoiceId}`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Could not delete the invoice. Please try again.');
 }
+async function getVehicleHistory(vehicleId) {
+  const res = await fetch(`/api/vehicles/${vehicleId}/history`);
+  return res.json();
+}
+async function getCurrentUser() {
+  const res = await fetch('/api/auth/me');
+  if (!res.ok) return null;
+  return res.json();
+}
 
 // Shrink a phone photo to a small JPEG data URL before uploading,
 // so it fits comfortably in the database.
@@ -244,6 +253,156 @@ function fmt(str) {
       ? w.toUpperCase()
       : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
   ).join(' ');
+}
+
+// ============================================================
+// CHANGE HISTORY — who changed what, and when
+// ============================================================
+const FIELD_LABELS = {
+  status: 'Status', dealership_id: 'Dealership', unit_price: 'Price',
+  quantity: 'Quantity', part_number: 'Part number', expected_date: 'Expected',
+  amount: 'Amount', invoice_date: 'Invoice date', invoice_type_id: 'Type',
+  photo: 'Photo',
+};
+
+const ACTION_VERBS = { created: 'Added', updated: 'Edited', deleted: 'Deleted' };
+
+// change_log stores raw column values as text. Turn them back into what the
+// shop floor sees on the card — a dealership name, not its id.
+function formatValue(field, value, ctx) {
+  if (value == null) return '—';
+  if (field === 'status')          return STATUS[value]?.label ?? value;
+  if (field === 'dealership_id')   return ctx.dealerName?.(value) || 'No dealership';
+  if (field === 'invoice_type_id') return ctx.typeName?.(value) || 'Uncategorised';
+  if (field === 'unit_price' || field === 'amount') return `$${Number(value).toFixed(2)}`;
+  if (field.endsWith('_date'))     return String(value).slice(0, 10);
+  return String(value);
+}
+
+// Photo values are digests, never printable. What changed is whether one exists.
+function describePhotoChange(oldValue, newValue) {
+  if (!oldValue && newValue) return 'Photo added';
+  if (oldValue && !newValue) return 'Photo removed';
+  return 'Photo replaced';
+}
+
+function timeAgo(iso) {
+  const seconds = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  if (seconds < 60)    return 'just now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60)    return minutes === 1 ? '1 minute ago' : `${minutes} minutes ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24)      return hours === 1 ? '1 hour ago' : `${hours} hours ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30)       return days === 1 ? 'yesterday' : `${days} days ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+// One edit that touched three columns wrote three rows, all sharing the
+// transaction's changed_at. Fold them back into a single entry so the history
+// reads "Lalon changed price and quantity", not the same edit three times.
+function groupHistory(entries) {
+  const groups = [];
+  for (const entry of entries) {
+    const last = groups[groups.length - 1];
+    const sameEdit = last
+      && last.changed_at === entry.changed_at
+      && last.action === entry.action
+      && last.username === entry.username;
+    if (sameEdit) last.changes.push(entry);
+    else groups.push({
+      changed_at: entry.changed_at, action: entry.action,
+      username: entry.username, display_name: entry.display_name,
+      changes: [entry],
+    });
+  }
+  return groups;
+}
+
+// The whole audit trail for a car, indexed by the record each entry belongs to.
+// One request covers the vehicle, its parts, its invoices and its photos.
+function useVehicleHistory(vehicleId) {
+  const [byEntity, setByEntity] = useState(new Map());
+
+  const reload = useCallback(() => getVehicleHistory(vehicleId)
+    .then(rows => {
+      const map = new Map();
+      for (const row of rows) {
+        const key = `${row.entity_type}:${row.entity_id}`;
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(row);
+      }
+      setByEntity(map);
+    })
+    .catch(() => {}), [vehicleId]);
+
+  useEffect(() => { reload(); }, [reload]);
+  return { byEntity, reload };
+}
+
+// A record whose history hasn't loaded yet, or that predates the audit trail,
+// renders nothing rather than an empty "Edited by nobody" line.
+function ChangeHistory({ entries, ctx = {} }) {
+  const [open, setOpen] = useState(false);
+  if (!entries?.length) return null;
+
+  const groups = groupHistory(entries);
+  const [latest] = groups;
+  const who = name => name || 'a removed user';
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px solid ${T.line}` }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+          background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
+          color: T.dim, fontSize: 11.5, fontFamily: 'inherit', textAlign: 'left',
+        }}
+      >
+        <History size={12} style={{ flexShrink: 0 }} />
+        <span style={{ flex: 1 }}>
+          {ACTION_VERBS[latest.action]} by <strong style={{ color: T.text, fontWeight: 600 }}>
+            {who(latest.display_name)}
+          </strong> · {timeAgo(latest.changed_at)}
+        </span>
+        <ChevronDown size={13} style={{
+          flexShrink: 0, transition: 'transform .15s',
+          transform: open ? 'rotate(180deg)' : 'none',
+        }} />
+      </button>
+
+      {open && (
+        <div style={{ marginTop: 8, display: 'grid', gap: 7 }}>
+          {groups.map(group => (
+            <div key={`${group.changed_at}-${group.action}-${group.username}`}
+              style={{ fontSize: 11.5, color: T.dim, lineHeight: 1.5 }}>
+              <div style={{ color: T.text, fontWeight: 600 }}>
+                {who(group.display_name)}
+                <span style={{ color: T.dim, fontWeight: 400 }}> · {timeAgo(group.changed_at)}</span>
+              </div>
+              {group.action !== 'updated' ? (
+                <div>{ACTION_VERBS[group.action]}</div>
+              ) : group.changes.map(change => (
+                <div key={change.id}>
+                  {change.field === 'photo' || change.field === 'data_url'
+                    ? describePhotoChange(change.old_value, change.new_value)
+                    : <>
+                        {FIELD_LABELS[change.field] || change.field}{' '}
+                        {formatValue(change.field, change.old_value, ctx)}
+                        {' → '}
+                        <span style={{ color: T.text }}>
+                          {formatValue(change.field, change.new_value, ctx)}
+                        </span>
+                      </>}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Orders already fetched this session, keyed by vehicle id. Reopening a car
@@ -458,6 +617,7 @@ let dashboardCache = null;
 function Dashboard({ onOpenVehicle }) {
   const [stats, setStats]   = useState(dashboardCache?.stats ?? null);
   const [recent, setRecent] = useState(dashboardCache?.recent ?? []);
+  const [me, setMe]         = useState(null);
 
   useEffect(() => {
     let alive = true;
@@ -465,22 +625,28 @@ function Dashboard({ onOpenVehicle }) {
       dashboardCache = d;
       if (alive) { setStats(d.stats); setRecent(d.recent); }
     }).catch(() => {});
+    getCurrentUser().then(u => { if (alive) setMe(u); }).catch(() => {});
     return () => { alive = false; };
   }, []);
 
   return (
     <>
       <Header title="MB Smash Repair" subtitle="Parts Management" action={
-        <button onClick={logout} title="Sign out" style={{
-          background: 'transparent', border: 'none', cursor: 'pointer',
-          display: 'flex', alignItems: 'center', padding: 6, borderRadius: 8,
-          color: T.dim, transition: 'color .15s',
-        }}
-          onMouseEnter={e => e.currentTarget.style.color = T.accent}
-          onMouseLeave={e => e.currentTarget.style.color = T.dim}
-        >
-          <LogOut size={18} />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {me && (
+            <span style={{ fontSize: 12.5, color: T.dim, fontWeight: 600 }}>{me.name}</span>
+          )}
+          <button onClick={logout} title="Sign out" style={{
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', padding: 6, borderRadius: 8,
+            color: T.dim, transition: 'color .15s',
+          }}
+            onMouseEnter={e => e.currentTarget.style.color = T.accent}
+            onMouseLeave={e => e.currentTarget.style.color = T.dim}
+          >
+            <LogOut size={18} />
+          </button>
+        </div>
       } />
       <div style={{ padding: 18 }}>
 
@@ -803,12 +969,14 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
   const [errorId, setErrorId]               = useState(null);
   const [errorMsg, setErrorMsg]             = useState('');
   const [editingOrder, setEditingOrder]     = useState(null);
+  const { byEntity, reload: reloadHistory }  = useVehicleHistory(vehicle.id);
 
   // The badge flips before this resolves, so a failure has to explain the revert.
   async function changeStatus(orderId, status) {
     setErrorId(null);
     try {
       await onStatus(orderId, status);
+      reloadHistory();
     } catch (err) {
       setErrorId(orderId);
       setErrorMsg(err?.message || 'Could not update the part. Please try again.');
@@ -908,6 +1076,8 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
                   {errorId === o.id && (
                     <div style={{ fontSize: 12.5, color: '#f472b6', marginTop: 6 }}>{errorMsg}</div>
                   )}
+
+                  <ChangeHistory entries={byEntity.get(`order:${o.id}`)} ctx={{ dealerName }} />
                 </div>
               );
             })}
@@ -922,6 +1092,7 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
           onCancel={() => setEditingOrder(null)}
           onSave={async fields => {
             await onEditOrder(editingOrder.id, fields);
+            reloadHistory();
             setEditingOrder(null);
           }}
         />
@@ -1449,6 +1620,7 @@ function InvoicesPage({ vehicle, onBack }) {
   const [lightbox, setLightbox]   = useState(null);
   const [editing, setEditing]     = useState(null);
   const [error, setError]         = useState('');
+  const { byEntity, reload: reloadHistory } = useVehicleHistory(vehicle.id);
 
   useEffect(() => {
     let alive = true;
@@ -1458,6 +1630,8 @@ function InvoicesPage({ vehicle, onBack }) {
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [vehicle.id]);
+
+  const typeName = id => types.find(t => String(t.id) === String(id))?.name || null;
 
   const total = invoices.reduce((s, i) => s + Number(i.amount || 0), 0);
 
@@ -1473,6 +1647,7 @@ function InvoicesPage({ vehicle, onBack }) {
     setInvoices(prev => prev.filter(i => i.id !== invoiceId));
     try {
       await removeVehicleInvoice(vehicle.id, invoiceId);
+      reloadHistory();
     } catch (err) {
       setInvoices(before);
       setError(err.message || 'Could not delete the invoice. Please try again.');
@@ -1523,6 +1698,8 @@ function InvoicesPage({ vehicle, onBack }) {
                       <InvoiceCard
                         key={inv.id}
                         invoice={inv}
+                        history={byEntity.get(`invoice:${inv.id}`)}
+                        typeName={typeName}
                         onOpenPhoto={() => setLightbox(inv.photo)}
                         onEdit={() => setEditing(inv)}
                         onDelete={() => remove(inv.id)}
@@ -1544,6 +1721,7 @@ function InvoicesPage({ vehicle, onBack }) {
           onSave={async fields => {
             const created = await addVehicleInvoice(vehicle.id, fields);
             setInvoices(prev => [created, ...prev]);
+            reloadHistory();
             setAdding(false);
           }}
         />
@@ -1559,6 +1737,7 @@ function InvoicesPage({ vehicle, onBack }) {
           onSave={async fields => {
             const updated = await updateVehicleInvoice(vehicle.id, editing.id, fields);
             setInvoices(prev => prev.map(i => (i.id === updated.id ? updated : i)));
+            reloadHistory();
             setEditing(null);
           }}
         />
@@ -1569,33 +1748,37 @@ function InvoicesPage({ vehicle, onBack }) {
   );
 }
 
-function InvoiceCard({ invoice, onOpenPhoto, onEdit, onDelete }) {
+function InvoiceCard({ invoice, history, typeName, onOpenPhoto, onEdit, onDelete }) {
   return (
     <div style={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12,
-      padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
-      {invoice.photo ? (
-        <img src={invoice.photo} alt="Invoice" onClick={onOpenPhoto}
-          style={{ width: 52, height: 52, objectFit: 'cover', cursor: 'pointer', flexShrink: 0,
-            borderRadius: 8, border: `1px solid ${T.line}` }} />
-      ) : (
-        <div style={{ width: 52, height: 52, borderRadius: 8, border: `1px dashed ${T.line}`,
-          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          <Receipt size={18} color={T.dim} />
-        </div>
-      )}
+      padding: '12px 14px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {invoice.photo ? (
+          <img src={invoice.photo} alt="Invoice" onClick={onOpenPhoto}
+            style={{ width: 52, height: 52, objectFit: 'cover', cursor: 'pointer', flexShrink: 0,
+              borderRadius: 8, border: `1px solid ${T.line}` }} />
+        ) : (
+          <div style={{ width: 52, height: 52, borderRadius: 8, border: `1px dashed ${T.line}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Receipt size={18} color={T.dim} />
+          </div>
+        )}
 
-      <div onClick={onEdit} style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}>
-        <div style={{ fontWeight: 700, fontSize: 16 }}>
-          {invoice.amount != null ? `$${Number(invoice.amount).toFixed(2)}` : 'No amount'}
+        <div onClick={onEdit} style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}>
+          <div style={{ fontWeight: 700, fontSize: 16 }}>
+            {invoice.amount != null ? `$${Number(invoice.amount).toFixed(2)}` : 'No amount'}
+          </div>
+          <div style={{ fontSize: 12.5, color: T.dim, marginTop: 2 }}>
+            {invoice.invoice_date ? invoice.invoice_date.slice(0, 10) : 'No date'}
+          </div>
         </div>
-        <div style={{ fontSize: 12.5, color: T.dim, marginTop: 2 }}>
-          {invoice.invoice_date ? invoice.invoice_date.slice(0, 10) : 'No date'}
-        </div>
+
+        <button onClick={onDelete} title="Delete invoice" style={iconBtn}>
+          <X size={16} color="#f472b6" />
+        </button>
       </div>
 
-      <button onClick={onDelete} title="Delete invoice" style={iconBtn}>
-        <X size={16} color="#f472b6" />
-      </button>
+      <ChangeHistory entries={history} ctx={{ typeName }} />
     </div>
   );
 }

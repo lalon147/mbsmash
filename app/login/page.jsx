@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Wrench, Lock } from 'lucide-react';
+import { Wrench, Lock, User } from 'lucide-react';
 
 const T = {
   bg:      '#090612',
@@ -14,7 +14,25 @@ const T = {
   danger:  '#f472b6',
 };
 
+const labelStyle = {
+  display: 'block', fontSize: 11.5, fontWeight: 700, color: T.dim,
+  marginBottom: 7, textTransform: 'uppercase', letterSpacing: '0.07em',
+};
+
+const iconStyle = {
+  position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)',
+  pointerEvents: 'none',
+};
+
+const inputStyle = (error) => ({
+  width: '100%', padding: '12px 14px 12px 38px', boxSizing: 'border-box',
+  background: T.bg, border: `1px solid ${error ? T.danger : T.line}`,
+  borderRadius: 10, color: T.text, fontSize: 15, outline: 'none',
+  fontFamily: 'inherit', transition: 'border-color .15s',
+});
+
 export default function LoginPage() {
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError]       = useState('');
   const [loading, setLoading]   = useState(false);
@@ -28,14 +46,15 @@ export default function LoginPage() {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     });
 
     if (res.ok) {
       router.push('/');
       router.refresh();
     } else {
-      setError('Incorrect password. Try again.');
+      const data = await res.json().catch(() => null);
+      setError(data?.error || 'Incorrect username or password.');
       setPassword('');
       setLoading(false);
     }
@@ -75,30 +94,37 @@ export default function LoginPage() {
         {/* Form */}
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
-            <label style={{
-              display: 'block', fontSize: 11.5, fontWeight: 700, color: T.dim,
-              marginBottom: 7, textTransform: 'uppercase', letterSpacing: '0.07em',
-            }}>
-              Password
-            </label>
+            <label style={labelStyle}>Username</label>
             <div style={{ position: 'relative' }}>
-              <Lock size={15} color={T.dim} style={{
-                position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)',
-                pointerEvents: 'none',
-              }} />
+              <User size={15} color={T.dim} style={iconStyle} />
+              <input
+                type="text"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                placeholder="reception, lalon or davinder"
+                autoFocus
+                required
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                style={inputStyle(error)}
+                onFocus={e => { if (!error) e.target.style.borderColor = T.accent; }}
+                onBlur={e =>  { if (!error) e.target.style.borderColor = T.line; }}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label style={labelStyle}>Password</label>
+            <div style={{ position: 'relative' }}>
+              <Lock size={15} color={T.dim} style={iconStyle} />
               <input
                 type="password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
-                placeholder="Enter shop password"
-                autoFocus
+                placeholder="Enter your password"
                 required
-                style={{
-                  width: '100%', padding: '12px 14px 12px 38px', boxSizing: 'border-box',
-                  background: T.bg, border: `1px solid ${error ? T.danger : T.line}`,
-                  borderRadius: 10, color: T.text, fontSize: 15, outline: 'none',
-                  fontFamily: 'inherit', transition: 'border-color .15s',
-                }}
+                style={inputStyle(error)}
                 onFocus={e => { if (!error) e.target.style.borderColor = T.accent; }}
                 onBlur={e =>  { if (!error) e.target.style.borderColor = T.line; }}
               />

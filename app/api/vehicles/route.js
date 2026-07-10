@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import pool from '@/lib/db';
+import { getSessionUser, unauthorized } from '@/lib/session';
+import { withAudit, logChange } from '@/lib/audit';
 
 export async function GET() {
   const { rows } = await pool.query(`
@@ -16,27 +18,38 @@ export async function GET() {
 }
 
 export async function POST(request) {
+  const user = await getSessionUser(request);
+  if (!user) return unauthorized();
+
   try {
     const { registration, make_id, model_id, make, model, customer_name, date_in, notes } =
       await request.json();
     if (!registration?.trim()) {
       return NextResponse.json({ error: 'Registration is required.' }, { status: 400 });
     }
-    const { rows } = await pool.query(`
-      INSERT INTO vehicles (registration, make_id, model_id, make, model, customer_name, date_in, notes)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      RETURNING id, registration, make_id, model_id, make, model, customer_name, date_in, notes, created_at
-    `, [
-      registration.trim(),
-      make_id || null,
-      model_id || null,
-      make || null,
-      model || null,
-      customer_name || null,
-      date_in || null,
-      notes || null,
-    ]);
-    return NextResponse.json(rows[0], { status: 201 });
+    const created = await withAudit(async client => {
+      const { rows: [vehicle] } = await client.query(`
+        INSERT INTO vehicles (registration, make_id, model_id, make, model, customer_name, date_in, notes)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id, registration, make_id, model_id, make, model, customer_name, date_in, notes, created_at
+      `, [
+        registration.trim(),
+        make_id || null,
+        model_id || null,
+        make || null,
+        model || null,
+        customer_name || null,
+        date_in || null,
+        notes || null,
+      ]);
+
+      await logChange(client, {
+        entityType: 'vehicle', entityId: vehicle.id, vehicleId: vehicle.id,
+        user, action: 'created',
+      });
+      return vehicle;
+    });
+    return NextResponse.json(created, { status: 201 });
   } catch (err) {
     // Log the real error server-side; only send a safe message to the browser.
     console.error('POST /api/vehicles failed:', err);

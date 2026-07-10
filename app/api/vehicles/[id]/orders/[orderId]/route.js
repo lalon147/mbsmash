@@ -1,53 +1,96 @@
 import { NextResponse } from 'next/server';
-import pool from '@/lib/db';
+import { getSessionUser, unauthorized } from '@/lib/session';
+import { withAudit, logChange, diffFields } from '@/lib/audit';
 
-const MAX_DATA_URL_LENGTH = 2_000_000;
+// Every editable column, and how a value arriving from the browser becomes the
+// value the column holds. Keeping them in one place means the SET clause, the
+// audit diff and the validation can't drift apart.
+const EDITABLE = {
+  dealership_id: v => v || null,
+  unit_price:    v => (v === '' || v === null ? null : Number(v)),
+  quantity:      v => Number(v) || 1,
+  part_number:   v => v || null,
+  expected_date: v => v || null,
+};
 
 export async function PATCH(request, { params }) {
   const { id, orderId } = await params;
+  const user = await getSessionUser(request);
+  if (!user) return unauthorized();
+
   const body = await request.json();
-  const { status } = body;
 
-  if (status !== undefined) {
-    const { rows } = await pool.query(`
-      UPDATE orders
-      SET status = $1::order_status,
-          received_date = CASE WHEN $1::order_status = 'received' THEN current_date ELSE received_date END
-      WHERE id = $2 AND vehicle_id = $3
-      RETURNING *
-    `, [status, orderId, id]);
-    return NextResponse.json(rows[0]);
-  }
+  try {
+    if (body.status !== undefined) {
+      const updated = await withAudit(async client => {
+        const { rows: [before] } = await client.query(
+          `SELECT * FROM orders WHERE id = $1 AND vehicle_id = $2 FOR UPDATE`,
+          [orderId, id],
+        );
+        if (!before) return null;
 
-  if ('invoice_photo' in body) {
-    const { invoice_photo } = body;
-    if (invoice_photo && (!invoice_photo.startsWith('data:image/') || invoice_photo.length > MAX_DATA_URL_LENGTH)) {
-      return NextResponse.json({ error: 'That file is not a usable photo.' }, { status: 400 });
+        // Both placeholders are cast: an untyped $1 shared between the enum
+        // column and the CASE comparison makes Postgres give up deducing a type.
+        const { rows: [after] } = await client.query(
+          `UPDATE orders
+              SET status = $1::order_status,
+                  received_date = CASE WHEN $1::order_status = 'received'
+                                       THEN current_date ELSE received_date END
+            WHERE id = $2 AND vehicle_id = $3
+            RETURNING *`,
+          [body.status, orderId, id],
+        );
+
+        await logChange(client, {
+          entityType: 'order', entityId: Number(orderId), vehicleId: Number(id),
+          user, action: 'updated',
+          changes: diffFields(before, after, ['status']),
+        });
+        return after;
+      });
+
+      if (!updated) return NextResponse.json({ error: 'Part not found.' }, { status: 404 });
+      return NextResponse.json(updated);
     }
-    const { rows } = await pool.query(
-      `UPDATE orders SET invoice_photo = $1 WHERE id = $2 AND vehicle_id = $3 RETURNING *`,
-      [invoice_photo || null, orderId, id]
+
+    const fields = Object.keys(EDITABLE).filter(f => body[f] !== undefined);
+    if (fields.length === 0) {
+      return NextResponse.json({ error: 'Nothing to update.' }, { status: 400 });
+    }
+
+    const updated = await withAudit(async client => {
+      const { rows: [before] } = await client.query(
+        `SELECT * FROM orders WHERE id = $1 AND vehicle_id = $2 FOR UPDATE`,
+        [orderId, id],
+      );
+      if (!before) return null;
+
+      const values = fields.map(f => EDITABLE[f](body[f]));
+      const sets = fields.map((f, i) => `${f} = $${i + 1}`);
+      values.push(orderId, id);
+
+      const { rows: [after] } = await client.query(
+        `UPDATE orders SET ${sets.join(', ')}
+          WHERE id = $${fields.length + 1} AND vehicle_id = $${fields.length + 2}
+          RETURNING *`,
+        values,
+      );
+
+      await logChange(client, {
+        entityType: 'order', entityId: Number(orderId), vehicleId: Number(id),
+        user, action: 'updated',
+        changes: diffFields(before, after, fields),
+      });
+      return after;
+    });
+
+    if (!updated) return NextResponse.json({ error: 'Part not found.' }, { status: 404 });
+    return NextResponse.json(updated);
+  } catch (err) {
+    console.error('PATCH /api/vehicles/[id]/orders/[orderId] failed:', err);
+    return NextResponse.json(
+      { error: 'Could not save changes. Please try again.' },
+      { status: 500 },
     );
-    return NextResponse.json(rows[0]);
   }
-
-  const { dealership_id, unit_price, quantity, part_number, expected_date } = body;
-  const sets = [];
-  const values = [];
-  let i = 1;
-  if (dealership_id !== undefined) { sets.push(`dealership_id = $${i++}`); values.push(dealership_id || null); }
-  if (unit_price !== undefined)    { sets.push(`unit_price = $${i++}`);    values.push(unit_price === '' || unit_price === null ? null : Number(unit_price)); }
-  if (quantity !== undefined)      { sets.push(`quantity = $${i++}`);      values.push(Number(quantity) || 1); }
-  if (part_number !== undefined)   { sets.push(`part_number = $${i++}`);   values.push(part_number || null); }
-  if (expected_date !== undefined) { sets.push(`expected_date = $${i++}`); values.push(expected_date || null); }
-
-  if (sets.length === 0) {
-    return NextResponse.json({ error: 'Nothing to update.' }, { status: 400 });
-  }
-  values.push(orderId, id);
-  const { rows } = await pool.query(
-    `UPDATE orders SET ${sets.join(', ')} WHERE id = $${i++} AND vehicle_id = $${i} RETURNING *`,
-    values
-  );
-  return NextResponse.json(rows[0]);
 }
