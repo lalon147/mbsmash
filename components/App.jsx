@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Search, Car, Plus, Check, X, Package, ChevronLeft,
   Hash, Tag, ChevronRight, RotateCcw, Wrench, LayoutDashboard, Paintbrush, LogOut,
-  Camera, Receipt, History, ChevronDown, Download, RotateCw, Wand2,
+  Camera, Receipt, History, ChevronDown, Download, RotateCw, Wand2, Clock,
 } from 'lucide-react';
 import { readInvoicePhoto } from '@/lib/scan';
 import { jpegToPdf, dataUrlToBytes } from '@/lib/pdf.mjs';
@@ -634,6 +634,45 @@ export default function App() {
 // paints the previous numbers immediately while fresh ones are fetched.
 let dashboardCache = null;
 
+// Live date + time for the dashboard. Ticks once a minute — seconds aren't shown,
+// so there's no point re-rendering every second. Locale formatting runs on the
+// client only, so the first paint after hydration is when the clock appears.
+function DashboardClock() {
+  const [now, setNow] = useState(null);
+
+  useEffect(() => {
+    setNow(new Date());
+    const id = setInterval(() => setNow(new Date()), 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const date = now && now.toLocaleDateString(undefined, {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  });
+  const time = now && now.toLocaleTimeString(undefined, {
+    hour: 'numeric', minute: '2-digit',
+  });
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18,
+      background: T.panel, border: `1px solid ${T.line}`, borderRadius: 14,
+      padding: '12px 14px',
+    }}>
+      <div style={{ width: 34, height: 34, borderRadius: 10, background: T.panelHi,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <Clock size={17} color={T.accent} />
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontWeight: 700, fontSize: 15, lineHeight: 1.2 }}>
+          {time || ' '}
+        </div>
+        <div style={{ color: T.dim, fontSize: 12.5 }}>{date || ' '}</div>
+      </div>
+    </div>
+  );
+}
+
 function Dashboard({ onOpenVehicle }) {
   const [stats, setStats]   = useState(dashboardCache?.stats ?? null);
   const [recent, setRecent] = useState(dashboardCache?.recent ?? []);
@@ -669,6 +708,8 @@ function Dashboard({ onOpenVehicle }) {
         </div>
       } />
       <div style={{ padding: 18 }}>
+
+        <DashboardClock />
 
         {stats ? (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 22 }}>
