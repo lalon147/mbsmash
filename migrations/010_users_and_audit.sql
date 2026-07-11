@@ -4,13 +4,13 @@
 -- Until now the app had one shared shop password and no notion of who was
 -- using it, so nothing could be attributed. This adds:
 --
---   users       — reception, lalon, davinder, each with their own password.
+--   users       — one row per staff member, each with their own password.
 --   change_log  — one row per changed field, per edit. 'created' and 'deleted'
 --                 get a single row with field/old_value/new_value left null.
 --
 -- Rows in one edit share changed_at exactly, because now() is the transaction
 -- start time and every write below runs inside one transaction. The UI groups
--- on that to show "Lalon changed price and quantity" as a single entry.
+-- on that to show "Sam changed price and quantity" as a single entry.
 --
 -- Passwords are NOT seeded here — hashing needs scrypt, so the three users are
 -- created by scripts/create-users.mjs, which prints the generated passwords once.

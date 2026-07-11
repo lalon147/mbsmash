@@ -320,7 +320,7 @@ function timeAgo(iso) {
 
 // One edit that touched three columns wrote three rows, all sharing the
 // transaction's changed_at. Fold them back into a single entry so the history
-// reads "Lalon changed price and quantity", not the same edit three times.
+// reads "Sam changed price and quantity", not the same edit three times.
 function groupHistory(entries) {
   const groups = [];
   for (const entry of entries) {

@@ -101,7 +101,7 @@ export default function LoginPage() {
                 type="text"
                 value={username}
                 onChange={e => setUsername(e.target.value)}
-                placeholder="reception, lalon or davinder"
+                placeholder="Enter your username"
                 autoFocus
                 required
                 autoCapitalize="none"

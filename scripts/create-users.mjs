@@ -6,7 +6,7 @@
 //
 //   node --env-file=.env.local scripts/create-users.mjs
 //
-// Pass usernames to limit it to those, e.g. `... create-users.mjs lalon`.
+// Pass usernames to limit it to those, e.g. `... create-users.mjs alice`.
 
 import { Pool } from 'pg';
 // .mjs so this script and Next can both load it — the package is not type:module.
@@ -14,7 +14,7 @@ import { hashPassword, generatePassword } from '../lib/password.mjs';
 
 const USERS = [
   { username: 'reception', display_name: 'Reception' },
-  { username: 'lalon',     display_name: 'Lalon' },
+  { username: 'workshop',  display_name: 'Workshop' },
   { username: 'davinder',  display_name: 'Davinder' },
 ];
 
