@@ -3,8 +3,10 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Search, Car, Plus, Check, X, Package, ChevronLeft,
   Hash, Tag, ChevronRight, RotateCcw, Wrench, LayoutDashboard, Paintbrush, LogOut,
-  Camera, Receipt, History, ChevronDown,
+  Camera, Receipt, History, ChevronDown, Download, RotateCw, Wand2,
 } from 'lucide-react';
+import { readInvoicePhoto } from '@/lib/scan';
+import { jpegToPdf, dataUrlToBytes } from '@/lib/pdf.mjs';
 
 // ============================================================
 // DATA LAYER — Next.js API routes → local PostgreSQL
@@ -284,6 +286,24 @@ function describePhotoChange(oldValue, newValue) {
   if (!oldValue && newValue) return 'Photo added';
   if (oldValue && !newValue) return 'Photo removed';
   return 'Photo replaced';
+}
+
+/**
+ * "5 Jul 2026", from either a timestamp or a plain 'YYYY-MM-DD' date.
+ *
+ * The two need different treatment. A DATE has no zone — lib/db.js hands it
+ * through as a bare string — so it must be built in local time; passing it to
+ * `new Date()` would read it as UTC midnight and show the day before for
+ * anyone east of Greenwich. A timestamptz is a real instant and converts fine.
+ */
+function shortDate(value) {
+  if (!value) return null;
+  const plain = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value));
+  const date = plain
+    ? new Date(Number(plain[1]), Number(plain[2]) - 1, Number(plain[3]))
+    : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function timeAgo(iso) {
@@ -963,6 +983,54 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
 // ------------------------------------------------------------
 // VEHICLE PAGE
 // ------------------------------------------------------------
+/**
+ * When the car came in, and when it was entered into the app. They differ
+ * whenever a job is typed up after the fact, so both are worth seeing.
+ */
+function VehicleDates({ vehicle }) {
+  const dates = [
+    ['Booked in', shortDate(vehicle.date_in)],
+    ['Created',   shortDate(vehicle.created_at)],
+  ].filter(([, value]) => value);
+
+  if (!dates.length) return null;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px 14px', marginBottom: 14,
+      fontSize: 12.5, color: T.dim }}>
+      {dates.map(([label, value]) => (
+        <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          {label} <strong style={{ color: T.text, fontWeight: 600 }}>{value}</strong>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * When the part was ordered, when it was due, when it turned up. A missing date
+ * is left out rather than shown as a dash — an empty 'Received' would read as
+ * "arrived, date unknown" when what it means is "still waiting".
+ */
+function OrderDates({ order }) {
+  const dates = [
+    ['Ordered',  shortDate(order.order_date),    T.text],
+    ['Expected', shortDate(order.expected_date), T.text],
+    ['Received', shortDate(order.received_date), T.accent],
+  ].filter(([, value]) => value);
+
+  if (!dates.length) return null;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px 12px', marginTop: 5,
+      fontSize: 12, color: T.dim }}>
+      {dates.map(([label, value, color]) => (
+        <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          {label} <strong style={{ color, fontWeight: 600 }}>{value}</strong>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, onBack, onAddPart, onPaint, onInvoices, onStatus, onEditOrder }) {
   const total   = orders.reduce((s, o) => s + (o.unit_price || 0) * (o.quantity || 1), 0);
   const pending = orders.filter(o => o.status === 'ordered').length;
@@ -991,6 +1059,8 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
         onBack={onBack}
       />
       <div style={{ padding: 18 }}>
+        <VehicleDates vehicle={vehicle} />
+
         <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
           <Stat label="Parts"   value={ordersLoading ? '—' : orders.length} />
           <Stat label="Pending" value={ordersLoading ? '—' : pending} />
@@ -1047,6 +1117,7 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
                           <span>${Number(o.unit_price).toFixed(2)}</span>
                         )}
                       </div>
+                      <OrderDates order={o} />
                     </div>
                     <span style={{ alignSelf: 'flex-start', fontSize: 11.5, fontWeight: 700,
                       color: st.fg, background: st.bg, border: `1px solid ${st.bd}`,
@@ -1654,6 +1725,33 @@ function InvoicesPage({ vehicle, onBack }) {
     }
   }
 
+  // The photo is already a JPEG, so the PDF is built in the browser from the
+  // bytes we have — no round trip, and nothing to re-encode.
+  function download(invoice) {
+    setError('');
+    const label = [
+      vehicle.registration,
+      typeName(invoice.invoice_type_id) || 'Invoice',
+      invoice.invoice_date ? String(invoice.invoice_date).slice(0, 10) : null,
+    ].filter(Boolean).join(' - ');
+
+    let url;
+    try {
+      const pdf = jpegToPdf(dataUrlToBytes(invoice.photo), { title: label });
+      url = URL.createObjectURL(new Blob([pdf], { type: 'application/pdf' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${label.replace(/[^\w\s.-]/g, '')}.pdf`;
+      link.click();
+    } catch (err) {
+      setError(err.message || 'Could not build a PDF from that photo.');
+    } finally {
+      // Revoking immediately can cancel the download in some browsers; the next
+      // frame is late enough that the click has been handed off.
+      if (url) requestAnimationFrame(() => URL.revokeObjectURL(url));
+    }
+  }
+
   return (
     <>
       <Header title="Invoices" subtitle={`for ${vehicle.registration}`} onBack={onBack} />
@@ -1703,6 +1801,7 @@ function InvoicesPage({ vehicle, onBack }) {
                         onOpenPhoto={() => setLightbox(inv.photo)}
                         onEdit={() => setEditing(inv)}
                         onDelete={() => remove(inv.id)}
+                        onDownload={() => download(inv)}
                       />
                     ))}
                   </div>
@@ -1748,7 +1847,7 @@ function InvoicesPage({ vehicle, onBack }) {
   );
 }
 
-function InvoiceCard({ invoice, history, typeName, onOpenPhoto, onEdit, onDelete }) {
+function InvoiceCard({ invoice, history, typeName, onOpenPhoto, onEdit, onDelete, onDownload }) {
   return (
     <div style={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12,
       padding: '12px 14px' }}>
@@ -1773,6 +1872,11 @@ function InvoiceCard({ invoice, history, typeName, onOpenPhoto, onEdit, onDelete
           </div>
         </div>
 
+        {invoice.photo && (
+          <button onClick={onDownload} title="Download as PDF" style={iconBtn}>
+            <Download size={16} color={T.dim} />
+          </button>
+        )}
         <button onClick={onDelete} title="Delete invoice" style={iconBtn}>
           <X size={16} color="#f472b6" />
         </button>
@@ -1793,19 +1897,65 @@ function InvoiceModal({ title, types, invoice, onClose, onSave, onTypeAdded }) {
   const [newType, setNewType]   = useState('');
   const [error, setError]       = useState('');
 
-  async function onPickPhoto(e) {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
+  // The photo the cleanup is derived from — a freshly picked File, or the data
+  // URL of the photo already on this invoice. Kept so that rotating can go back
+  // to it rather than compounding a rotation onto an already-rotated JPEG.
+  const [source, setSource]       = useState(null);
+  const [variants, setVariants]   = useState(null);   // { original, cleaned }
+  const [useCleaned, setUseCleaned] = useState(true);
+  const [turns, setTurns]         = useState(0);
+
+  async function render(nextSource, nextTurns, cleaned) {
     setPhotoBusy(true); setError('');
     try {
-      setPhoto(await fileToResizedDataUrl(file));
+      const next = await readInvoicePhoto(nextSource, nextTurns);
+      setVariants(next);
+      setPhoto(cleaned ? next.cleaned : next.original);
     } catch (err) {
       setError(err.message || 'Could not read that image.');
     } finally {
       setPhotoBusy(false);
     }
   }
+
+  async function onPickPhoto(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setSource(file); setTurns(0); setUseCleaned(true);
+    await render(file, 0, true);
+  }
+
+  // Clean or rotate a photo that was saved before any of this existed.
+  async function cleanUp() {
+    const from = source ?? photo;
+    setSource(from); setTurns(0); setUseCleaned(true);
+    await render(from, 0, true);
+  }
+
+  async function rotate() {
+    const from = source ?? photo;
+    const next = (turns + 1) % 4;
+    setSource(from); setTurns(next);
+    await render(from, next, useCleaned);
+  }
+
+  function choose(cleaned) {
+    setUseCleaned(cleaned);
+    setPhoto(cleaned ? variants.cleaned : variants.original);
+  }
+
+  function clearPhoto() {
+    setPhoto(null); setVariants(null); setSource(null); setTurns(0);
+  }
+
+  const chip = active => ({
+    display: 'flex', alignItems: 'center', gap: 6, flex: 1, justifyContent: 'center',
+    fontSize: 12.5, fontWeight: 600, padding: '9px 10px', borderRadius: 9, cursor: 'pointer',
+    color: active ? T.accent : T.dim,
+    background: active ? 'rgba(121,78,230,0.16)' : 'transparent',
+    border: `1px solid ${active ? T.accent : T.line}`,
+  });
 
   async function saveNewType() {
     if (!newType.trim()) return;
@@ -1867,31 +2017,56 @@ function InvoiceModal({ title, types, invoice, onClose, onSave, onTypeAdded }) {
       </div>
 
       <Field label="Photo">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {photo && (
-            <div style={{ position: 'relative', width: 72, height: 72, flexShrink: 0 }}>
-              <img src={photo} alt="Invoice" style={{ width: '100%', height: '100%', objectFit: 'cover',
-                borderRadius: 10, border: `1px solid ${T.line}` }} />
-              <button onClick={() => setPhoto(null)} title="Remove photo" style={{
-                position: 'absolute', top: -6, right: -6, width: 22, height: 22, padding: 0,
-                borderRadius: 999, border: `1px solid ${T.line}`, background: T.panel,
-                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <X size={13} color="#f472b6" />
+        {photo && (
+          <div style={{ position: 'relative', marginBottom: 10 }}>
+            <img src={photo} alt="Invoice" style={{
+              display: 'block', width: '100%', maxHeight: 260, objectFit: 'contain',
+              background: T.bg, borderRadius: 10, border: `1px solid ${T.line}`,
+              opacity: photoBusy ? 0.4 : 1, transition: 'opacity .15s',
+            }} />
+            <button onClick={clearPhoto} title="Remove photo" style={{
+              position: 'absolute', top: -6, right: -6, width: 24, height: 24, padding: 0,
+              borderRadius: 999, border: `1px solid ${T.line}`, background: T.panel,
+              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <X size={14} color="#f472b6" />
+            </button>
+          </div>
+        )}
+
+        {photo && (
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+            {variants ? (
+              <>
+                <button onClick={() => choose(true)}  disabled={photoBusy} style={chip(useCleaned)}>
+                  <Wand2 size={14} /> Cleaned
+                </button>
+                <button onClick={() => choose(false)} disabled={photoBusy} style={chip(!useCleaned)}>
+                  Original
+                </button>
+              </>
+            ) : (
+              <button onClick={cleanUp} disabled={photoBusy} style={chip(false)}>
+                <Wand2 size={14} /> Clean up
               </button>
-            </div>
-          )}
-          <label style={{
-            display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600,
-            color: T.dim, cursor: photoBusy ? 'wait' : 'pointer', opacity: photoBusy ? 0.5 : 1,
-            border: `1px dashed ${T.line}`, borderRadius: 10, padding: '12px 14px',
-          }}>
-            <Camera size={16} color={T.accent} />
-            {photoBusy ? 'Reading…' : photo ? 'Replace photo' : 'Add photo'}
-            <input type="file" accept="image/*" capture="environment"
-              onChange={onPickPhoto} disabled={photoBusy} style={{ display: 'none' }} />
-          </label>
-        </div>
+            )}
+            <button onClick={rotate} disabled={photoBusy} title="Rotate a quarter turn"
+              style={{ ...chip(false), flex: '0 0 auto', padding: '9px 12px' }}>
+              <RotateCw size={14} />
+            </button>
+          </div>
+        )}
+
+        <label style={{
+          display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600,
+          color: T.dim, cursor: photoBusy ? 'wait' : 'pointer', opacity: photoBusy ? 0.5 : 1,
+          border: `1px dashed ${T.line}`, borderRadius: 10, padding: '12px 14px',
+        }}>
+          <Camera size={16} color={T.accent} />
+          {photoBusy ? 'Cleaning up…' : photo ? 'Replace photo' : 'Add photo'}
+          <input type="file" accept="image/*" capture="environment"
+            onChange={onPickPhoto} disabled={photoBusy} style={{ display: 'none' }} />
+        </label>
       </Field>
 
       {error && <div style={{ fontSize: 13, color: '#f472b6' }}>{error}</div>}
@@ -1899,7 +2074,7 @@ function InvoiceModal({ title, types, invoice, onClose, onSave, onTypeAdded }) {
       <ActionButton
         onClick={save}
         onError={err => setError(err.message || 'Could not save the invoice. Please try again.')}
-        disabled={!typeId}
+        disabled={!typeId || photoBusy}
         pendingLabel="Saving…"
         style={primaryBtn}
       >
