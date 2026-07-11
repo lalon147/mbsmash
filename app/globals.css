@@ -7,6 +7,16 @@ html, body {
   overscroll-behavior: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Stop iOS from bumping font sizes when rotating to landscape. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Fill the notch/home-indicator gutters with the app background so no white
+   bars show through when launched full-screen from the home screen. */
+html {
+  background: #090612;
+  min-height: 100%;
 }
 
 button, input, select, textarea {

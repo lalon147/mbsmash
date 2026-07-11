@@ -27,7 +27,8 @@ const iconStyle = {
 const inputStyle = (error) => ({
   width: '100%', padding: '12px 14px 12px 38px', boxSizing: 'border-box',
   background: T.bg, border: `1px solid ${error ? T.danger : T.line}`,
-  borderRadius: 10, color: T.text, fontSize: 15, outline: 'none',
+  // 16px prevents iOS Safari from auto-zooming when the field is focused.
+  borderRadius: 10, color: T.text, fontSize: 16, outline: 'none',
   fontFamily: 'inherit', transition: 'border-color .15s',
 });
 
@@ -62,10 +63,15 @@ export default function LoginPage() {
 
   return (
     <div style={{
-      minHeight: '100vh', background: T.bg, display: 'flex', flexDirection: 'column',
+      minHeight: '100dvh', background: T.bg, display: 'flex', flexDirection: 'column',
       alignItems: 'center', justifyContent: 'center', gap: 24,
       fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+      // Base padding plus safe-area insets so the card never hides under the notch/home indicator.
       padding: 20,
+      paddingTop: 'calc(20px + env(safe-area-inset-top))',
+      paddingBottom: 'calc(20px + env(safe-area-inset-bottom))',
+      paddingLeft: 'calc(20px + env(safe-area-inset-left))',
+      paddingRight: 'calc(20px + env(safe-area-inset-right))',
     }}>
       <div style={{
         width: '100%', maxWidth: 360,

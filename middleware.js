@@ -8,6 +8,17 @@ export async function middleware(request) {
     return NextResponse.next();
   }
 
+  // Home-screen install assets must be reachable without a session — Safari
+  // fetches the manifest and icons before (and independently of) login.
+  if (
+    pathname === '/manifest.webmanifest' ||
+    pathname === '/apple-touch-icon.png' ||
+    pathname === '/favicon.png' ||
+    pathname.startsWith('/icons/')
+  ) {
+    return NextResponse.next();
+  }
+
   const token = request.cookies.get('auth_token')?.value;
   if (!token || !(await verifyAuthToken(token))) {
     return NextResponse.redirect(new URL('/login', request.url));

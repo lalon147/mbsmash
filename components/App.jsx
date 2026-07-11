@@ -524,10 +524,19 @@ export default function App() {
 
   return (
     <div style={{
-      minHeight: '100vh', background: T.bg, color: T.text,
+      minHeight: '100dvh', background: T.bg, color: T.text,
       fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
     }}>
-      <div style={{ maxWidth: 520, margin: '0 auto', paddingBottom: view === 'main' ? 80 : 40 }}>
+      <div style={{
+        maxWidth: 520, margin: '0 auto',
+        // Clear the fixed bottom nav plus the iPhone home-indicator gutter, and
+        // keep content off the rounded corners / notch when in landscape.
+        paddingBottom: view === 'main'
+          ? 'calc(80px + env(safe-area-inset-bottom))'
+          : 'calc(40px + env(safe-area-inset-bottom))',
+        paddingLeft: 'env(safe-area-inset-left)',
+        paddingRight: 'env(safe-area-inset-right)',
+      }}>
 
         {view === 'main' && tab === 'dashboard' && (
           <Dashboard onOpenVehicle={openVehicle} />
@@ -605,6 +614,11 @@ export default function App() {
           position: 'fixed', bottom: 0, left: 0, right: 0,
           background: T.panel, borderTop: `1px solid ${T.line}`,
           display: 'flex', zIndex: 20,
+          // Sit the tab bar above the home indicator, and center it within the
+          // safe width so buttons don't slide under the notch in landscape.
+          paddingBottom: 'env(safe-area-inset-bottom)',
+          paddingLeft: 'env(safe-area-inset-left)',
+          paddingRight: 'env(safe-area-inset-right)',
         }}>
           {[
             { key: 'dashboard', Icon: LayoutDashboard, label: 'Dashboard' },
@@ -2134,7 +2148,9 @@ function Header({ title, subtitle, onBack, action }) {
       position: 'sticky', top: 0, zIndex: 10,
       background: T.panel,
       borderBottom: `1px solid ${T.line}`,
+      // Extra top padding clears the status bar / Dynamic Island in standalone mode.
       padding: '14px 16px',
+      paddingTop: 'calc(14px + env(safe-area-inset-top))',
       display: 'flex', alignItems: 'center', gap: 10,
     }}>
       {onBack
@@ -2355,8 +2371,9 @@ const addChip = {
   cursor: 'pointer', flexShrink: 0,
 };
 const inputStyle = {
+  // fontSize must be >= 16px: iOS Safari auto-zooms the page on focus otherwise.
   width: '100%', background: T.panel, border: `1px solid ${T.line}`, borderRadius: 10,
-  padding: '11px 12px', color: T.text, fontSize: 15, outline: 'none', boxSizing: 'border-box',
+  padding: '11px 12px', color: T.text, fontSize: 16, outline: 'none', boxSizing: 'border-box',
   colorScheme: 'dark',
 };
 const searchBox = {
@@ -2364,5 +2381,6 @@ const searchBox = {
   border: `1px solid ${T.line}`, borderRadius: 12, padding: '12px 14px',
 };
 const searchInput = {
-  flex: 1, background: 'transparent', border: 'none', outline: 'none', color: T.text, fontSize: 15,
+  // 16px keeps iOS from zooming when the search field gains focus.
+  flex: 1, background: 'transparent', border: 'none', outline: 'none', color: T.text, fontSize: 16,
 };
