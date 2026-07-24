@@ -40,13 +40,26 @@ jobs:
       - name: Install Bubblewrap
         run: npm install -g @bubblewrap/cli
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
       # Point Bubblewrap at the toolchain the runner already provides so it
-      # doesn't try to download its own copies.
+      # doesn't download its own copies. Bubblewrap validates that <sdk>/tools
+      # (or <sdk>/bin) exists and looks for sdkmanager at <sdk>/tools/bin —
+      # the deprecated layout — while modern SDKs put it under
+      # cmdline-tools/latest. Bridge the two with a symlink.
       - name: Configure Bubblewrap toolchain
         run: |
+          if [ ! -e "$ANDROID_SDK_ROOT/tools" ]; then
+            ln -s "$ANDROID_SDK_ROOT/cmdline-tools/latest" "$ANDROID_SDK_ROOT/tools"
+          fi
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
           mkdir -p "$HOME/.bubblewrap"
           printf '{ "jdkPath": "%s", "androidSdkPath": "%s" }\n' \
             "$JAVA_HOME" "$ANDROID_SDK_ROOT" > "$HOME/.bubblewrap/config.json"
+          echo "--- config.json ---"; cat "$HOME/.bubblewrap/config.json"
+          echo "--- sdk root ---"; ls -la "$ANDROID_SDK_ROOT"
+          echo "--- tools/bin ---"; ls "$ANDROID_SDK_ROOT/tools/bin" | head
 
       # Reuse a saved keystore if one is stored as a secret; otherwise generate a
       # fresh one so the very first build still succeeds. Add ANDROID_KEYSTORE_BASE64
