@@ -14,7 +14,10 @@ export async function middleware(request) {
     pathname === '/manifest.webmanifest' ||
     pathname === '/apple-touch-icon.png' ||
     pathname === '/favicon.png' ||
-    pathname.startsWith('/icons/')
+    pathname.startsWith('/icons/') ||
+    // The Android app's ownership check (Digital Asset Links) is fetched by
+    // Chrome with no session, the same as the manifest above.
+    pathname.startsWith('/.well-known/')
   ) {
     return NextResponse.next();
   }

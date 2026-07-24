@@ -1,0 +1,16 @@
+# Never commit signing keys or build output.
+*.keystore
+*.jks
+*.apk
+*.aab
+*.pem
+
+# Bubblewrap / Gradle generated project files (regenerated from twa-manifest.json).
+/app/
+/.gradle/
+/build/
+gradlew
+gradlew.bat
+gradle/
+local.properties
+store_icon.png

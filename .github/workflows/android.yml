@@ -1,0 +1,94 @@
+name: Build Android APK
+
+# Wraps the live PWA (https://mbsmash.vercel.app) into an installable Android
+# app using Bubblewrap (a Trusted Web Activity). No app UI is written here — the
+# APK just loads the deployed web app full-screen. GitHub's runners already have
+# the Android SDK, so the APK is built in CI and offered as a downloadable
+# artifact; nobody needs the ~1 GB Android toolchain on their own machine.
+#
+# Run it from the Actions tab ("Run workflow"), or it runs automatically when
+# anything under android-twa/ changes. Download the APK from the run's
+# "Artifacts" section, then sideload it onto the phone.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'android-twa/**'
+      - '.github/workflows/android.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-twa
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Bubblewrap
+        run: npm install -g @bubblewrap/cli
+
+      # Point Bubblewrap at the toolchain the runner already provides so it
+      # doesn't try to download its own copies.
+      - name: Configure Bubblewrap toolchain
+        run: |
+          mkdir -p "$HOME/.bubblewrap"
+          printf '{ "jdkPath": "%s", "androidSdkPath": "%s" }\n' \
+            "$JAVA_HOME" "$ANDROID_SDK_ROOT" > "$HOME/.bubblewrap/config.json"
+
+      # Reuse a saved keystore if one is stored as a secret; otherwise generate a
+      # fresh one so the very first build still succeeds. Add ANDROID_KEYSTORE_BASE64
+      # (and ANDROID_KEYSTORE_PASSWORD) as repo secrets once you want a stable key
+      # that can update installed apps in place — see android-twa/README.md.
+      - name: Provide signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android.keystore
+            echo "Using keystore from repository secret."
+          else
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret — generating a throwaway keystore. Builds signed with different keys cannot update each other in place."
+            keytool -genkeypair -v -keystore android.keystore \
+              -alias mbsmash -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "${KS_PASS:-mbsmash}" -keypass "${KS_PASS:-mbsmash}" \
+              -dname "CN=MB Smash Repair, O=MB Smash Repair, C=AU"
+          fi
+
+      - name: Build signed APK
+        env:
+          BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'mbsmash' }}
+          BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD || 'mbsmash' }}
+        run: bubblewrap build --skipPwaValidation
+
+      # The fingerprint to paste into the ASSETLINKS_SHA256 env var on Vercel,
+      # which removes the browser URL bar from the app.
+      - name: Show signing fingerprint for assetlinks
+        env:
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'mbsmash' }}
+        run: |
+          echo "Set this as ASSETLINKS_SHA256 in Vercel, then redeploy:"
+          keytool -list -v -keystore android.keystore -alias mbsmash -storepass "$KS_PASS" \
+            | grep -i 'SHA256:' | head -1
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mbsmash-android
+          path: |
+            android-twa/*.apk
+            android-twa/*.aab
+          if-no-files-found: error
