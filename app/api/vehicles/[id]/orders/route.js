@@ -19,19 +19,32 @@ export async function POST(request, { params }) {
 
   try {
     const {
-      catalog_part_id, part_name, part_number, dealership_id,
+      repair_id, catalog_part_id, part_name, part_number, dealership_id,
       quantity, unit_price, expected_date, status,
     } = await request.json();
 
     const created = await withAudit(async client => {
+      // Attach to the repair the caller named; fall back to the car's newest
+      // repair so an older client that doesn't send one still lands somewhere
+      // sensible rather than erroring on the NOT NULL column.
+      const { rows: [target] } = await client.query(
+        repair_id
+          ? `SELECT id FROM repairs WHERE id = $1 AND vehicle_id = $2`
+          : `SELECT id FROM repairs WHERE vehicle_id = $2
+             ORDER BY created_at DESC LIMIT 1`,
+        [repair_id || null, id],
+      );
+      if (!target) throw new Error('No repair to attach this part to.');
+
       const { rows: [order] } = await client.query(`
         INSERT INTO orders
-          (vehicle_id, catalog_part_id, part_name, part_number, dealership_id,
+          (vehicle_id, repair_id, catalog_part_id, part_name, part_number, dealership_id,
            quantity, unit_price, expected_date, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
         RETURNING *
       `, [
         id,
+        target.id,
         catalog_part_id || null,
         part_name,
         part_number || null,

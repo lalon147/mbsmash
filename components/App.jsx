@@ -4,6 +4,7 @@ import {
   Search, Car, Plus, Check, X, Package, ChevronLeft,
   Hash, Tag, ChevronRight, RotateCcw, Wrench, LayoutDashboard, Paintbrush, LogOut,
   Camera, Receipt, History, ChevronDown, Download, RotateCw, Wand2, Clock,
+  Layers, Pencil,
 } from 'lucide-react';
 import { readInvoicePhoto } from '@/lib/scan';
 import { jpegToPdf, dataUrlToBytes } from '@/lib/pdf.mjs';
@@ -44,6 +45,28 @@ async function getVehicles() {
 async function getOrdersForVehicle(id) {
   const res = await fetch(`/api/vehicles/${id}/orders`);
   return res.json();
+}
+async function getRepairs(vehicleId) {
+  const res = await fetch(`/api/vehicles/${vehicleId}/repairs`);
+  return res.json();
+}
+async function addRepair(vehicleId, body = {}) {
+  const res = await fetch(`/api/vehicles/${vehicleId}/repairs`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not start a new repair. Please try again.');
+  return data;
+}
+async function updateRepair(vehicleId, repairId, fields) {
+  const res = await fetch(`/api/vehicles/${vehicleId}/repairs/${repairId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not save changes. Please try again.');
+  return data;
 }
 async function getDealerships() {
   const res = await fetch('/api/dealerships');
@@ -442,6 +465,10 @@ export default function App() {
   const [activeVehicle, setActiveVehicle] = useState(null);
   const [orders, setOrders]         = useState([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
+  // Which repair (accident/job) the vehicle page is showing. Held here, not in
+  // VehiclePage, so it survives the trip out to the Order-part screen and back —
+  // a part added while viewing an older accident stays on that accident.
+  const [activeRepairId, setActiveRepairId] = useState(null);
 
   // Bumped on every orders fetch so a slow response for a vehicle the user has
   // already navigated away from can't overwrite the one they're looking at now.
@@ -500,6 +527,9 @@ export default function App() {
     const cached = ordersCache.get(String(v.id));
     setActiveVehicle(v);
     setOrders(cached || []);
+    // Let VehiclePage pick the default repair for this car once its repairs load;
+    // a leftover id from the last car would point at the wrong vehicle.
+    setActiveRepairId(null);
     setView('vehicle');
     loadOrders(v.id, { showSkeleton: !cached });
   }
@@ -557,6 +587,8 @@ export default function App() {
             ordersLoading={ordersLoading}
             dealerships={dealerships}
             dealerName={dealerName}
+            activeRepairId={activeRepairId}
+            onSelectRepair={setActiveRepairId}
             onBack={() => setView('main')}
             onAddPart={() => setView('add-part')}
             onPaint={() => setView('paint')}
@@ -575,6 +607,7 @@ export default function App() {
         {view === 'add-part' && activeVehicle && (
           <AddPart
             vehicle={activeVehicle}
+            repairId={activeRepairId}
             dealerships={dealerships}
             dealerName={dealerName}
             onCancel={() => setView('vehicle')}
@@ -1086,13 +1119,48 @@ function OrderDates({ order }) {
   );
 }
 
-function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, onBack, onAddPart, onPaint, onInvoices, onStatus, onEditOrder }) {
-  const total   = orders.reduce((s, o) => s + (o.unit_price || 0) * (o.quantity || 1), 0);
-  const pending = orders.filter(o => o.status === 'ordered').length;
+function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, activeRepairId, onSelectRepair, onBack, onAddPart, onPaint, onInvoices, onStatus, onEditOrder }) {
+  const [repairs, setRepairs]               = useState([]);
+  const [repairModal, setRepairModal]       = useState(null);   // repair being renamed/closed
   const [errorId, setErrorId]               = useState(null);
   const [errorMsg, setErrorMsg]             = useState('');
   const [editingOrder, setEditingOrder]     = useState(null);
   const { byEntity, reload: reloadHistory }  = useVehicleHistory(vehicle.id);
+
+  useEffect(() => {
+    getRepairs(vehicle.id).then(rows => Array.isArray(rows) && setRepairs(rows)).catch(() => {});
+  }, [vehicle.id]);
+
+  // The repair currently on screen: the one the app remembers, or the newest
+  // (the accident most likely being worked on) once the list has loaded.
+  const selected = repairs.find(r => String(r.id) === String(activeRepairId))
+    || repairs[repairs.length - 1] || null;
+
+  // Adopt that default so "Order part" — which reads the remembered id up in the
+  // root — attaches to the repair actually showing, not to nothing.
+  useEffect(() => {
+    if (selected && String(selected.id) !== String(activeRepairId)) onSelectRepair(selected.id);
+  }, [selected, activeRepairId, onSelectRepair]);
+
+  // Only this repair's parts. Everything on the page — list, stats, counts —
+  // is scoped to it, so a second accident never muddles the first.
+  const repairOrders = selected
+    ? orders.filter(o => String(o.repair_id) === String(selected.id))
+    : orders;
+  const total   = repairOrders.reduce((s, o) => s + (o.unit_price || 0) * (o.quantity || 1), 0);
+  const pending = repairOrders.filter(o => o.status === 'ordered').length;
+
+  async function createRepair() {
+    const repair = await addRepair(vehicle.id);
+    setRepairs(prev => [...prev, repair]);
+    onSelectRepair(repair.id);
+  }
+
+  async function saveRepair(repairId, fields) {
+    const updated = await updateRepair(vehicle.id, repairId, fields);
+    setRepairs(prev => prev.map(r => (String(r.id) === String(repairId) ? { ...r, ...updated } : r)));
+    setRepairModal(null);
+  }
 
   // The badge flips before this resolves, so a failure has to explain the revert.
   async function changeStatus(orderId, status) {
@@ -1116,8 +1184,17 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
       <div style={{ padding: 18 }}>
         <VehicleDates vehicle={vehicle} />
 
+        <RepairBar
+          repairs={repairs}
+          orders={orders}
+          selectedId={selected?.id}
+          onSelect={onSelectRepair}
+          onNew={createRepair}
+          onEdit={setRepairModal}
+        />
+
         <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-          <Stat label="Parts"   value={ordersLoading ? '—' : orders.length} />
+          <Stat label="Parts"   value={ordersLoading ? '—' : repairOrders.length} />
           <Stat label="Pending" value={ordersLoading ? '—' : pending} />
           <Stat label="Cost"    value={ordersLoading || !total ? '—' : `$${total.toFixed(0)}`} />
         </div>
@@ -1139,18 +1216,18 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
             <LoadingNote>Loading parts…</LoadingNote>
             <Skeleton rows={3} height={92} />
           </div>
-        ) : orders.length === 0 ? (
+        ) : repairOrders.length === 0 ? (
           <div style={{ marginTop: 18, textAlign: 'center', color: T.dim,
             border: `1px dashed ${T.line}`, borderRadius: 12, padding: '30px 16px' }}>
             <Wrench size={22} color={T.dim} style={{ marginBottom: 8 }} />
-            <div style={{ fontWeight: 600, color: T.text }}>No parts ordered yet</div>
+            <div style={{ fontWeight: 600, color: T.text }}>No parts on this repair yet</div>
             <div style={{ fontSize: 13, marginTop: 4 }}>
               Order parts as you assess the damage. If it can be repaired, there&apos;s nothing to add.
             </div>
           </div>
         ) : (
           <div style={{ display: 'grid', gap: 10, marginTop: 16 }}>
-            {orders.map(o => {
+            {repairOrders.map(o => {
               const st = STATUS[o.status] || STATUS.ordered;
               return (
                 <div key={o.id} style={{ background: T.panel, border: `1px solid ${T.line}`,
@@ -1223,7 +1300,126 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
           }}
         />
       )}
+
+      {repairModal && (
+        <RepairModal
+          repair={repairModal}
+          onCancel={() => setRepairModal(null)}
+          onSave={fields => saveRepair(repairModal.id, fields)}
+        />
+      )}
     </>
+  );
+}
+
+// ------------------------------------------------------------
+// REPAIR BAR — one chip per accident/job, with a way to start another
+// ------------------------------------------------------------
+// A repair's shown name: whatever it was renamed to, else "Repair N" by the
+// order it was opened. Counting from the position in the list keeps the label
+// stable and human even when titles were never set.
+function repairLabel(repair, index) {
+  return repair.title?.trim() || `Repair ${index + 1}`;
+}
+
+function RepairBar({ repairs, orders, selectedId, onSelect, onNew, onEdit }) {
+  const [busy, setBusy] = useState(false);
+  if (!repairs.length) return null;
+
+  const selected = repairs.find(r => String(r.id) === String(selectedId));
+  const selectedIndex = repairs.findIndex(r => String(r.id) === String(selectedId));
+
+  async function startNew() {
+    if (busy) return;
+    setBusy(true);
+    try { await onNew(); } catch { /* surfaced elsewhere; chip just won't appear */ }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8,
+        fontSize: 11.5, fontWeight: 700, letterSpacing: 0.6, color: T.dim, textTransform: 'uppercase' }}>
+        <Layers size={13} color={T.accent} /> Repairs
+      </div>
+      <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
+        {repairs.map((r, i) => {
+          const active  = String(r.id) === String(selectedId);
+          const pending = orders.filter(o => String(o.repair_id) === String(r.id) && o.status === 'ordered').length;
+          const closed  = r.status === 'closed';
+          return (
+            <button key={r.id} onClick={() => onSelect(r.id)} style={{
+              display: 'flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap', flexShrink: 0,
+              padding: '8px 12px', borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              transition: 'all .15s',
+              border: `1.5px solid ${active ? T.accent : T.line}`,
+              background: active ? 'rgba(121,78,230,.18)' : T.panel,
+              color: active ? T.accent : (closed ? T.dim : T.text),
+            }}>
+              <span>{repairLabel(r, i)}</span>
+              {closed && <span style={{ fontSize: 11, color: T.dim }}>· closed</span>}
+              {pending > 0 && (
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#fcd34d',
+                  background: 'rgba(252,211,77,.14)', borderRadius: 999, padding: '1px 7px' }}>
+                  {pending}
+                </span>
+              )}
+            </button>
+          );
+        })}
+        <button onClick={startNew} disabled={busy} title="Start a new repair" style={{
+          display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
+          padding: '8px 12px', borderRadius: 999, fontSize: 13, fontWeight: 600,
+          cursor: busy ? 'wait' : 'pointer', color: T.accent, background: 'transparent',
+          border: `1.5px dashed ${T.line}`, opacity: busy ? 0.6 : 1,
+        }}>
+          <Plus size={15} /> {busy ? 'Adding…' : 'New repair'}
+        </button>
+      </div>
+      {selected && (
+        <button onClick={() => onEdit(selected)} style={{
+          display: 'flex', alignItems: 'center', gap: 5, marginTop: 8,
+          background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
+          color: T.dim, fontSize: 12, fontFamily: 'inherit',
+        }}>
+          <Pencil size={12} /> Rename or close {repairLabel(selected, selectedIndex)}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function RepairModal({ repair, onCancel, onSave }) {
+  const [title, setTitle]   = useState(repair.title || '');
+  const [error, setError]   = useState('');
+  const closed = repair.status === 'closed';
+
+  return (
+    <Modal title="Repair details" onClose={onCancel}>
+      <Field label="Name">
+        <input autoFocus value={title} onChange={e => setTitle(e.target.value)}
+          placeholder="e.g. Rear-end, Front bar" style={inputStyle} />
+      </Field>
+      {error && <div style={{ fontSize: 13, color: '#f472b6' }}>{error}</div>}
+      <div style={{ display: 'flex', gap: 10 }}>
+        <ActionButton
+          onClick={() => onSave({ status: closed ? 'open' : 'closed' })}
+          onError={err => setError(err.message || 'Could not update the repair. Please try again.')}
+          pendingLabel="Saving…"
+          style={{ ...outlineBtn, flex: 1 }}
+        >
+          {closed ? <><RotateCcw size={16} /> Reopen</> : <><Check size={16} /> Mark closed</>}
+        </ActionButton>
+        <ActionButton
+          onClick={() => onSave({ title })}
+          onError={err => setError(err.message || 'Could not save changes. Please try again.')}
+          pendingLabel="Saving…"
+          style={{ ...primaryBtn, flex: 1, marginTop: 0 }}
+        >
+          <Check size={18} /> Save name
+        </ActionButton>
+      </div>
+    </Modal>
   );
 }
 
@@ -1286,7 +1482,7 @@ function EditOrderModal({ order, dealerships, onCancel, onSave }) {
 // ------------------------------------------------------------
 // ADD PART
 // ------------------------------------------------------------
-function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
+function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlaced }) {
   const [term, setTerm]             = useState('');
   const [results, setResults]       = useState([]);
   const [picked, setPicked]         = useState(null);
@@ -1365,6 +1561,7 @@ function AddPart({ vehicle, dealerships, dealerName, onCancel, onPlaced }) {
     setPlaceError('');
     const order = await placeOrder({
       vehicle_id:      vehicle.id,
+      repair_id:       repairId || null,
       catalog_part_id: picked.id,
       part_name:       picked.part_name,
       part_number:     picked.part_number,
