@@ -43,6 +43,15 @@ export async function POST(request) {
         notes || null,
       ]);
 
+      // Every part hangs off a repair, so a car booked in with none can't take
+      // any parts at all. Open its first one here, in the same transaction —
+      // dated the day the car came in, matching what migration 013 backfilled.
+      await client.query(
+        `INSERT INTO repairs (vehicle_id, title, opened_date)
+         VALUES ($1, 'Repair 1', COALESCE($2::date, current_date))`,
+        [vehicle.id, date_in || null],
+      );
+
       await logChange(client, {
         entityType: 'vehicle', entityId: vehicle.id, vehicleId: vehicle.id,
         user, action: 'created',

@@ -25,16 +25,31 @@ export async function POST(request, { params }) {
 
     const created = await withAudit(async client => {
       // Attach to the repair the caller named; fall back to the car's newest
-      // repair so an older client that doesn't send one still lands somewhere
-      // sensible rather than erroring on the NOT NULL column.
-      const { rows: [target] } = await client.query(
-        repair_id
-          ? `SELECT id FROM repairs WHERE id = $1 AND vehicle_id = $2`
-          : `SELECT id FROM repairs WHERE vehicle_id = $2
+      // repair so a client that doesn't send one still lands somewhere sensible
+      // rather than erroring on the NOT NULL column. Each branch passes only
+      // the parameters its own query uses — a query that skips $1 but uses $2
+      // leaves $1's type unknowable and Postgres rejects the whole statement.
+      const { rows: [found] } = repair_id
+        ? await client.query(
+            `SELECT id FROM repairs WHERE id = $1 AND vehicle_id = $2`,
+            [repair_id, id],
+          )
+        : await client.query(
+            `SELECT id FROM repairs WHERE vehicle_id = $1
              ORDER BY created_at DESC LIMIT 1`,
-        [repair_id || null, id],
-      );
-      if (!target) throw new Error('No repair to attach this part to.');
+            [id],
+          );
+
+      // A car with no repair at all — booked in before vehicle creation started
+      // opening one — would otherwise be stuck unable to take any part. Open its
+      // first repair now instead of failing.
+      const { rows: [target] } = found
+        ? { rows: [found] }
+        : await client.query(
+            `INSERT INTO repairs (vehicle_id, title) VALUES ($1, 'Repair 1')
+             RETURNING id`,
+            [id],
+          );
 
       const { rows: [order] } = await client.query(`
         INSERT INTO orders
