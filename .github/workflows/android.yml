@@ -81,6 +81,15 @@ jobs:
               -dname "CN=MB Smash Repair, O=MB Smash Repair, C=AU"
           fi
 
+      # Only twa-manifest.json is committed — the Android project it describes
+      # (app/, gradlew, gradle/) is generated output and stays gitignored, so it
+      # has to be regenerated here. Without this, `build` finds no gradle project
+      # and no manifest-checksum.txt, and stops on an interactive prompt.
+      # --skipVersionUpgrade keeps appVersionCode as committed, so the checksum
+      # it writes matches the manifest and `build` runs unattended.
+      - name: Generate Android project from twa-manifest.json
+        run: bubblewrap update --skipVersionUpgrade
+
       - name: Build signed APK
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'mbsmash' }}
