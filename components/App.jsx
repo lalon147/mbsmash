@@ -4,7 +4,7 @@ import {
   Search, Car, Plus, Check, X, Package, ChevronLeft,
   Hash, Tag, ChevronRight, RotateCcw, Wrench, LayoutDashboard, Paintbrush, LogOut,
   Camera, Receipt, History, ChevronDown, Download, RotateCw, Wand2, Clock,
-  Layers, Pencil,
+  Layers, Pencil, StickyNote,
 } from 'lucide-react';
 import { readInvoicePhoto } from '@/lib/scan';
 import { jpegToPdf, dataUrlToBytes } from '@/lib/pdf.mjs';
@@ -83,6 +83,15 @@ async function addVehicle(v) {
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.error || 'Could not save the vehicle. Please try again.');
+  return data;
+}
+async function updateVehicleNotes(vehicleId, notes) {
+  const res = await fetch(`/api/vehicles/${vehicleId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notes }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not save the note. Please try again.');
   return data;
 }
 async function placeOrder(order) {
@@ -287,7 +296,7 @@ const FIELD_LABELS = {
   status: 'Status', dealership_id: 'Dealership', unit_price: 'Price',
   quantity: 'Quantity', part_number: 'Part number', expected_date: 'Expected',
   amount: 'Amount', invoice_date: 'Invoice date', invoice_type_id: 'Type',
-  photo: 'Photo',
+  photo: 'Photo', notes: 'Note', title: 'Name',
 };
 
 const ACTION_VERBS = { created: 'Added', updated: 'Edited', deleted: 'Deleted' };
@@ -301,7 +310,10 @@ function formatValue(field, value, ctx) {
   if (field === 'invoice_type_id') return ctx.typeName?.(value) || 'Uncategorised';
   if (field === 'unit_price' || field === 'amount') return `$${Number(value).toFixed(2)}`;
   if (field.endsWith('_date'))     return String(value).slice(0, 10);
-  return String(value);
+  // A note runs to sentences. The history says what changed, not what it now
+  // says — the note itself is right there on the page above.
+  const text = String(value);
+  return text.length > 40 ? `${text.slice(0, 40)}…` : text;
 }
 
 // Photo values are digests, never printable. What changed is whether one exists.
@@ -534,6 +546,15 @@ export default function App() {
     loadOrders(v.id, { showSkeleton: !cached });
   }
 
+  // A note belongs to the car, so it has to change everywhere the car is shown:
+  // the page it was typed on, and the list behind it that flags cars carrying a
+  // note. Only what the server confirms is kept.
+  async function saveVehicleNotes(notes) {
+    const updated = await updateVehicleNotes(activeVehicle.id, notes);
+    setActiveVehicle(cur => (cur && cur.id === updated.id ? { ...cur, ...updated } : cur));
+    setVehicles(cur => cur.map(v => (v.id === updated.id ? { ...v, ...updated } : v)));
+  }
+
   // Apply `patch` to one order immediately, run the request, then reconcile with
   // the row the server returns — rolling that single order back if it fails.
   async function mutateOrder(orderId, patch, request) {
@@ -589,6 +610,7 @@ export default function App() {
             dealerName={dealerName}
             activeRepairId={activeRepairId}
             onSelectRepair={setActiveRepairId}
+            onSaveNotes={saveVehicleNotes}
             onBack={() => setView('main')}
             onAddPart={() => setView('add-part')}
             onPaint={() => setView('paint')}
@@ -969,7 +991,12 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
                   </div>
                 </div>
               </div>
-              <ChevronRight size={18} color={T.dim} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                {/* Something unusual was written up on this car — worth knowing
+                    before opening it, not after. */}
+                {v.notes && <StickyNote size={15} color="#fcd34d" />}
+                <ChevronRight size={18} color={T.dim} />
+              </div>
             </button>
           ))}
         </div>
@@ -1119,7 +1146,98 @@ function OrderDates({ order }) {
   );
 }
 
-function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, activeRepairId, onSelectRepair, onBack, onAddPart, onPaint, onInvoices, onStatus, onEditOrder }) {
+/**
+ * Anything out of the ordinary on this car: a part that turned up damaged, a
+ * dealership that back-ordered, what the customer was told on the phone. It
+ * sits above the parts because it's what the next person needs to read before
+ * they touch anything, and it stays with the car across every repair it comes
+ * back for.
+ */
+function VehicleNotes({ notes, history, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft]     = useState(notes || '');
+  const [error, setError]     = useState('');
+
+  // Someone else's edit lands while this is just being read: take it. While it
+  // is being typed in, leave the draft alone — that text is unsaved work.
+  useEffect(() => { if (!editing) setDraft(notes || ''); }, [notes, editing]);
+
+  async function save() {
+    setError('');
+    await onSave(draft);
+    setEditing(false);
+  }
+
+  return (
+    <div style={{
+      background: T.panel, border: `1px solid ${T.line}`,
+      borderLeft: `3px solid ${notes ? '#fcd34d' : T.line}`,
+      borderRadius: 12, padding: '12px 14px', marginBottom: 14,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <StickyNote size={13} color={notes ? '#fcd34d' : T.dim} style={{ flexShrink: 0 }} />
+        <span style={{ flex: 1, fontSize: 11.5, fontWeight: 700, letterSpacing: 0.6,
+          color: T.dim, textTransform: 'uppercase' }}>
+          Notes
+        </span>
+        {!editing && (
+          <button onClick={() => setEditing(true)} style={{
+            display: 'flex', alignItems: 'center', gap: 5,
+            background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
+            color: T.accent, fontSize: 12, fontWeight: 600, fontFamily: 'inherit',
+          }}>
+            {notes ? <><Pencil size={12} /> Edit</> : <><Plus size={13} /> Add note</>}
+          </button>
+        )}
+      </div>
+
+      {editing ? (
+        <>
+          <textarea
+            autoFocus
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            rows={4}
+            placeholder="Anything unusual — a damaged part, a delay, what the customer was told"
+            style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5, fontFamily: 'inherit' }}
+          />
+          {error && <div style={{ fontSize: 12.5, color: '#f472b6', marginTop: 8 }}>{error}</div>}
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <button onClick={() => { setEditing(false); setDraft(notes || ''); setError(''); }}
+              style={miniBtn(T.dim)}>
+              Cancel
+            </button>
+            <ActionButton
+              onClick={save}
+              onError={err => setError(err.message || 'Could not save the note. Please try again.')}
+              pendingLabel="Saving…"
+              style={miniBtn(T.accent)}
+            >
+              <Check size={14} /> Save note
+            </ActionButton>
+          </div>
+        </>
+      ) : notes ? (
+        // Typed as it was written: line breaks are how a note keeps two separate
+        // things separate.
+        <div style={{ fontSize: 14, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          {notes}
+        </div>
+      ) : (
+        <div style={{ fontSize: 13, color: T.dim }}>
+          Nothing unusual recorded on this vehicle.
+        </div>
+      )}
+
+      {/* Only edits, and the note is the only thing on a vehicle that can be
+          edited. The car's own "created" entry belongs to the dates above —
+          under this heading it would read as though the note were added then. */}
+      <ChangeHistory entries={history?.filter(e => e.action === 'updated')} />
+    </div>
+  );
+}
+
+function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, activeRepairId, onSelectRepair, onSaveNotes, onBack, onAddPart, onPaint, onInvoices, onStatus, onEditOrder }) {
   const [repairs, setRepairs]               = useState([]);
   const [repairModal, setRepairModal]       = useState(null);   // repair being renamed/closed
   const [errorId, setErrorId]               = useState(null);
@@ -1183,6 +1301,12 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
       />
       <div style={{ padding: 18 }}>
         <VehicleDates vehicle={vehicle} />
+
+        <VehicleNotes
+          notes={vehicle.notes}
+          history={byEntity.get(`vehicle:${vehicle.id}`)}
+          onSave={async notes => { await onSaveNotes(notes); reloadHistory(); }}
+        />
 
         <RepairBar
           repairs={repairs}
@@ -1652,6 +1776,10 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
                         <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                           <Tag size={12} />{dealerName(p.default_dealership_id)}
                         </span>
+                      )}
+                      {/* Says why this one is near the top of the list. */}
+                      {Number(p.order_count) > 0 && (
+                        <span>Ordered {p.order_count}×</span>
                       )}
                     </div>
                   </div>
