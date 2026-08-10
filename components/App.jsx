@@ -81,6 +81,10 @@ async function updateDealership(id, fields) {
   if (!res.ok) throw new Error(data?.error || 'Could not save the supplier. Please try again.');
   return data;
 }
+async function getUnassignedOrders() {
+  const res = await fetch('/api/orders/unassigned');
+  return res.json();
+}
 async function searchCatalog(term) {
   const res = await fetch(`/api/catalog?q=${encodeURIComponent(term)}`);
   return res.json();
@@ -490,6 +494,9 @@ export default function App() {
   // VehiclePage, so it survives the trip out to the Order-part screen and back —
   // a part added while viewing an older accident stays on that accident.
   const [activeRepairId, setActiveRepairId] = useState(null);
+  // Bumped when suppliers have been assigned, so the Suppliers tab re-counts
+  // what is left instead of showing the number it loaded on the way in.
+  const [assignEpoch, setAssignEpoch] = useState(0);
 
   // Bumped on every orders fetch so a slow response for a vehicle the user has
   // already navigated away from can't overwrite the one they're looking at now.
@@ -632,7 +639,28 @@ export default function App() {
         )}
 
         {view === 'main' && tab === 'suppliers' && (
-          <SuppliersPage dealerships={dealerships} onSaved={applyDealership} />
+          <SuppliersPage
+            dealerships={dealerships}
+            onSaved={applyDealership}
+            onAssign={() => setView('assign-suppliers')}
+            assignEpoch={assignEpoch}
+          />
+        )}
+
+        {view === 'assign-suppliers' && (
+          <AssignSuppliersPage
+            dealerships={dealerships}
+            onBack={() => setView('main')}
+            onDone={() => {
+              // Those orders now have a supplier, so anything cached about them
+              // is stale — the vehicle pages that showed them, and the count on
+              // the Suppliers tab that sent the user here.
+              ordersCache.clear();
+              cacheEpoch.current++;
+              setAssignEpoch(e => e + 1);
+              setView('main');
+            }}
+          />
         )}
 
         {view === 'vehicle' && activeVehicle && (
@@ -993,15 +1021,36 @@ function ChaseRow({ order, onOpenVehicle }) {
 // in the app is most-used-first. That ranking is for picking a supplier while
 // standing at a car; this is a contact book, where you already know the name
 // you're looking for and want it where the alphabet says it is.
-function SuppliersPage({ dealerships, onSaved }) {
+function SuppliersPage({ dealerships, onSaved, onAssign, assignEpoch }) {
   const [editing, setEditing] = useState(null);
+  const [unassigned, setUnassigned] = useState(null);
   const sorted = [...dealerships].sort((a, b) => a.name.localeCompare(b.name));
   const missing = sorted.filter(d => !d.email && !d.phone).length;
+
+  // Re-counted whenever the assign screen has been through, so the prompt goes
+  // away the moment there is nothing left to assign.
+  useEffect(() => {
+    getUnassignedOrders().then(r => setUnassigned(r.length)).catch(() => {});
+  }, [assignEpoch]);
 
   return (
     <>
       <Header title="Suppliers" subtitle={`${sorted.length} dealerships`} />
       <div style={{ padding: 18 }}>
+        {unassigned > 0 && (
+          <button onClick={onAssign} style={{ ...cardBtn, marginBottom: 12,
+            borderLeft: '3px solid #fcd34d', textAlign: 'left' }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 14.5 }}>
+                {unassigned} part{unassigned === 1 ? '' : 's'} on order with no supplier
+              </div>
+              <div style={{ color: T.dim, fontSize: 12.5, marginTop: 3 }}>
+                Set them from what each make usually comes from
+              </div>
+            </div>
+            <ChevronRight size={16} color={T.dim} />
+          </button>
+        )}
         {missing > 0 && (
           <div style={{ background: T.panel, border: `1px solid ${T.line}`,
             borderLeft: '3px solid #fcd34d', borderRadius: 12, padding: 14, marginBottom: 18,
@@ -1054,6 +1103,129 @@ function SuppliersPage({ dealerships, onSaved }) {
           }}
         />
       )}
+    </>
+  );
+}
+
+// ------------------------------------------------------------
+// ASSIGN SUPPLIERS — fill in who is supplying the parts on order
+// ------------------------------------------------------------
+// Each row arrives with the supplier that car's make usually comes from, and
+// says how often that has been true, so accepting it is a judgement rather
+// than a shrug. Nothing is written until Save, and what gets written is
+// attributed to whoever pressed it like any other change — which is the whole
+// reason this is a screen and not a bulk update run against the database.
+function AssignSuppliersPage({ dealerships, onBack, onDone }) {
+  const [rows, setRows]       = useState(null);
+  const [choice, setChoice]   = useState({});   // order id -> dealership id ('' = leave alone)
+  const [error, setError]     = useState('');
+  const [savedCount, setSaved] = useState(0);
+
+  useEffect(() => {
+    getUnassignedOrders()
+      .then(list => {
+        setRows(list);
+        // Pre-select the suggestion, so the common case is read-and-save. A
+        // make with no history gets a blank, not a nearest guess.
+        setChoice(Object.fromEntries(
+          list.map(o => [o.id, o.suggested_id ? String(o.suggested_id) : '']),
+        ));
+      })
+      .catch(() => setRows([]));
+  }, []);
+
+  const byName = [...dealerships].sort((a, b) => a.name.localeCompare(b.name));
+  const chosen = rows?.filter(o => choice[o.id]) ?? [];
+
+  async function save() {
+    setError('');
+    let done = 0;
+    for (const order of chosen) {
+      await updateOrderDetails(order.vehicle_id, order.id, {
+        dealership_id: choice[order.id],
+      });
+      setSaved(++done);
+    }
+    onDone(done);
+  }
+
+  if (rows === null) {
+    return (
+      <>
+        <Header title="Set suppliers" onBack={onBack} />
+        <div style={{ padding: 18 }}><Skeleton rows={3} height={90} /></div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Header title="Set suppliers" subtitle={`${rows.length} parts on order`} onBack={onBack} />
+      <div style={{ padding: 18 }}>
+        {rows.length === 0 ? (
+          <div style={{ textAlign: 'center', color: T.dim, border: `1px dashed ${T.line}`,
+            borderRadius: 12, padding: '26px 12px', fontSize: 14 }}>
+            Every part on order has a supplier against it.
+          </div>
+        ) : (
+          <>
+            <div style={{ background: T.panel, border: `1px solid ${T.line}`,
+              borderLeft: '3px solid #fcd34d', borderRadius: 12, padding: 14, marginBottom: 18,
+              fontSize: 13, color: T.dim, lineHeight: 1.5 }}>
+              Each part is set to the supplier that make usually comes from — check
+              them and change any that are wrong. Parts already received are left
+              alone: those arrived long ago and guessing who supplied them would
+              be inventing history.
+            </div>
+
+            <div style={{ display: 'grid', gap: 10 }}>
+              {rows.map(o => (
+                <div key={o.id} style={{ background: T.panel, border: `1px solid ${T.line}`,
+                  borderRadius: 12, padding: 14 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14.5 }}>
+                    {Number(o.quantity) > 1 && <span style={{ color: T.dim }}>{o.quantity} × </span>}
+                    {fmt(o.part_name)}
+                  </div>
+                  <div style={{ color: T.dim, fontSize: 12.5, marginTop: 3 }}>
+                    {o.registration}
+                    {o.make ? ` · ${[o.make, o.model].filter(Boolean).join(' ')}` : ' · make not recorded'}
+                  </div>
+
+                  <select value={choice[o.id] ?? ''}
+                    onChange={e => setChoice(c => ({ ...c, [o.id]: e.target.value }))}
+                    style={{ ...inputStyle, marginTop: 10 }}>
+                    <option value="">Leave unset</option>
+                    {byName.map(d => (
+                      <option key={d.id} value={String(d.id)}>{d.name}</option>
+                    ))}
+                  </select>
+
+                  {/* Says why this one is preselected, and how much to trust it. */}
+                  <div style={{ fontSize: 12, color: T.dim, marginTop: 7 }}>
+                    {o.suggested_id
+                      ? `${o.suggested_pct}% of ${o.make} parts came from ${o.suggested_name} (${o.suggested_n} orders)`
+                      : o.make
+                        ? `No ${o.make} part has ever had a supplier recorded — nothing to go on.`
+                        : 'This car has no make recorded, so there is nothing to go on.'}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {error && <div style={{ fontSize: 13, color: '#f472b6', marginTop: 14 }}>{error}</div>}
+            <ActionButton
+              onClick={save}
+              onError={err => setError(
+                `${err.message || 'Could not save.'} ${savedCount} of ${chosen.length} were saved.`)}
+              pendingLabel={`Saving ${savedCount}/${chosen.length}…`}
+              disabled={chosen.length === 0}
+              style={{ ...primaryBtn, marginTop: 20 }}
+            >
+              <Check size={18} /> Set {chosen.length} supplier{chosen.length === 1 ? '' : 's'}
+            </ActionButton>
+          </>
+        )}
+      </div>
     </>
   );
 }
