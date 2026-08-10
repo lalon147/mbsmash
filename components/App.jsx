@@ -4,7 +4,7 @@ import {
   Search, Car, Plus, Check, X, Package, ChevronLeft,
   Hash, Tag, ChevronRight, RotateCcw, Wrench, LayoutDashboard, Paintbrush, LogOut,
   Camera, Receipt, History, ChevronDown, Download, RotateCw, Wand2, Clock,
-  Layers, Pencil, StickyNote,
+  Layers, Pencil, StickyNote, Mail, Phone, Building2, AlertTriangle, Copy,
 } from 'lucide-react';
 import { readInvoicePhoto } from '@/lib/scan';
 import { jpegToPdf, dataUrlToBytes } from '@/lib/pdf.mjs';
@@ -68,9 +68,18 @@ async function updateRepair(vehicleId, repairId, fields) {
   if (!res.ok) throw new Error(data?.error || 'Could not save changes. Please try again.');
   return data;
 }
-async function getDealerships() {
-  const res = await fetch('/api/dealerships');
+async function getDealerships(make) {
+  const res = await fetch(`/api/dealerships?make=${encodeURIComponent(make || '')}`);
   return res.json();
+}
+async function updateDealership(id, fields) {
+  const res = await fetch(`/api/dealerships/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not save the supplier. Please try again.');
+  return data;
 }
 async function searchCatalog(term) {
   const res = await fetch(`/api/catalog?q=${encodeURIComponent(term)}`);
@@ -498,6 +507,13 @@ export default function App() {
   }, []);
 
   const dealerName = id => dealerships.find(d => String(d.id) === String(id))?.name || null;
+  const dealer     = id => dealerships.find(d => String(d.id) === String(id)) || null;
+
+  // A supplier edited anywhere — the Suppliers tab, or the email screen when it
+  // turns out nobody ever wrote the address down — has to change everywhere it
+  // is shown, without refetching and losing the make ranking on the list.
+  const applyDealership = updated =>
+    setDealerships(cur => cur.map(d => (d.id === updated.id ? { ...d, ...updated } : d)));
 
   // Call before sending anything that changes a vehicle's orders. Every fetch
   // still in flight left the server before the change, so it is written off,
@@ -536,14 +552,28 @@ export default function App() {
   // session paints its parts at once and refreshes behind them, so returning to
   // one never costs a skeleton.
   function openVehicle(v) {
+    // The dashboard's cards and the chasing list carry only enough of a car to
+    // draw a row — no note, no booked-in date. Opened as-is, the vehicle page
+    // would show an empty note for a car that has one, which is the one thing
+    // that page exists to put in front of whoever picks the car up next. The
+    // full row is already in memory from startup, so fill it in from there
+    // rather than asking the server again.
+    const full = vehicles.find(x => String(x.id) === String(v.id));
+    const vehicle = full ? { ...v, ...full } : v;
+
     const cached = ordersCache.get(String(v.id));
-    setActiveVehicle(v);
+    setActiveVehicle(vehicle);
     setOrders(cached || []);
     // Let VehiclePage pick the default repair for this car once its repairs load;
     // a leftover id from the last car would point at the wrong vehicle.
     setActiveRepairId(null);
     setView('vehicle');
     loadOrders(v.id, { showSkeleton: !cached });
+    // Re-rank the suppliers for this car's make, so the dropdown on its parts
+    // opens on the dealership this make actually comes from. It's the same list
+    // either way — only the order changes — so dealerName() keeps resolving
+    // every id while the new ranking is on its way.
+    if (vehicle.make) getDealerships(vehicle.make).then(setDealerships).catch(() => {});
   }
 
   // A note belongs to the car, so it has to change everywhere the car is shown:
@@ -601,6 +631,10 @@ export default function App() {
           />
         )}
 
+        {view === 'main' && tab === 'suppliers' && (
+          <SuppliersPage dealerships={dealerships} onSaved={applyDealership} />
+        )}
+
         {view === 'vehicle' && activeVehicle && (
           <VehiclePage
             vehicle={activeVehicle}
@@ -613,6 +647,7 @@ export default function App() {
             onSaveNotes={saveVehicleNotes}
             onBack={() => setView('main')}
             onAddPart={() => setView('add-part')}
+            onEmailOrder={() => setView('order-email')}
             onPaint={() => setView('paint')}
             onInvoices={() => setView('invoices')}
             onStatus={(orderId, status) => mutateOrder(
@@ -661,6 +696,16 @@ export default function App() {
           />
         )}
 
+        {view === 'order-email' && activeVehicle && (
+          <OrderEmailPage
+            vehicle={activeVehicle}
+            orders={orders}
+            lookupDealer={dealer}
+            onSavedDealership={applyDealership}
+            onBack={() => setView('vehicle')}
+          />
+        )}
+
         <Footer />
       </div>
 
@@ -678,6 +723,7 @@ export default function App() {
           {[
             { key: 'dashboard', Icon: LayoutDashboard, label: 'Dashboard' },
             { key: 'vehicles',  Icon: Car,             label: 'Vehicles'  },
+            { key: 'suppliers', Icon: Building2,       label: 'Suppliers' },
           ].map(({ key, Icon, label }) => (
             <button key={key} onClick={() => setTab(key)} style={{
               flex: 1, padding: '12px 8px 16px', background: 'transparent', border: 'none',
@@ -742,16 +788,21 @@ function DashboardClock() {
   );
 }
 
+// How many late parts the dashboard shows before asking to be expanded.
+const CHASE_PREVIEW = 5;
+
 function Dashboard({ onOpenVehicle }) {
   const [stats, setStats]   = useState(dashboardCache?.stats ?? null);
   const [recent, setRecent] = useState(dashboardCache?.recent ?? []);
+  const [chasing, setChasing] = useState(dashboardCache?.chasing ?? []);
+  const [showAllChasing, setShowAllChasing] = useState(false);
   const [me, setMe]         = useState(null);
 
   useEffect(() => {
     let alive = true;
     getDashboardStats().then(d => {
       dashboardCache = d;
-      if (alive) { setStats(d.stats); setRecent(d.recent); }
+      if (alive) { setStats(d.stats); setRecent(d.recent); setChasing(d.chasing || []); }
     }).catch(() => {});
     getCurrentUser().then(u => { if (alive) setMe(u); }).catch(() => {});
     return () => { alive = false; };
@@ -791,6 +842,33 @@ function Dashboard({ onOpenVehicle }) {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 22 }}>
             <Skeleton rows={2} height={70} />
             <Skeleton rows={2} height={70} />
+          </div>
+        )}
+
+        {chasing.length > 0 && (
+          <div style={{ marginBottom: 22 }}>
+            <SectionLabel>Chasing ({stats?.chasing_count ?? chasing.length})</SectionLabel>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {/* A few at a time. The whole list at once is a wall that pushes
+                  everything else off the screen, and the top of it is the part
+                  that has been waiting longest anyway. */}
+              {(showAllChasing ? chasing : chasing.slice(0, CHASE_PREVIEW)).map(o => (
+                <ChaseRow key={o.id} order={o} onOpenVehicle={onOpenVehicle} />
+              ))}
+            </div>
+            {chasing.length > CHASE_PREVIEW && (
+              <button onClick={() => setShowAllChasing(v => !v)} style={{
+                width: '100%', marginTop: 8, padding: '10px', borderRadius: 10,
+                background: 'transparent', border: `1px dashed ${T.line}`,
+                color: T.dim, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              }}>
+                {showAllChasing
+                  ? 'Show fewer'
+                  : `Show all ${chasing.length}${
+                      (stats?.chasing_count ?? 0) > chasing.length
+                        ? ` of ${stats.chasing_count}` : ''}`}
+              </button>
+            )}
           </div>
         )}
 
@@ -840,6 +918,176 @@ function StatCard({ label, value, accent }) {
       <div style={{ fontSize: 24, fontWeight: 800, color: accent, lineHeight: 1 }}>{value}</div>
       <div style={{ fontSize: 12, color: T.dim, marginTop: 6, fontWeight: 600 }}>{label}</div>
     </div>
+  );
+}
+
+// A date `days` from today as 'YYYY-MM-DD', the format a date input and every
+// DATE column in this app expect. Built from the local calendar date rather
+// than toISOString(), which would answer in UTC and give yesterday all evening
+// in AEST.
+function inDays(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Whole days between a 'YYYY-MM-DD' date column and today, local time. Parsed
+// with an explicit midnight so the string isn't read as UTC and shifted a day
+// back in AEST — the same trap lib/db.js turns off the DATE parser for.
+function daysSince(isoDate) {
+  if (!isoDate) return null;
+  const then = new Date(`${isoDate.slice(0, 10)}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((today - then) / 86_400_000);
+}
+
+// One part that should have arrived by now. It says which of the two ways it
+// got here — a delivery date that passed, or no date at all and long enough
+// that the silence is the problem — because the phone call is different: one
+// asks what happened to a promised date, the other asks for a date.
+function ChaseRow({ order, onOpenVehicle }) {
+  const late = Number(order.days_late);
+  const dealer = order.dealership_name;
+  const reason = order.expected_date
+    ? `${late} day${late === 1 ? '' : 's'} past due`
+    : `no delivery date, ordered ${daysSince(order.order_date)} days ago`;
+
+  return (
+    <div style={{ ...cardBtn, cursor: 'default', alignItems: 'flex-start' }}>
+      <button
+        onClick={() => onOpenVehicle({ id: order.vehicle_id, registration: order.registration,
+          make: order.make, model: order.model })}
+        style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
+          textAlign: 'left', minWidth: 0, flex: 1, color: 'inherit', font: 'inherit' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          <AlertTriangle size={14} color="#fcd34d" style={{ flexShrink: 0 }} />
+          <span style={{ fontWeight: 700, fontSize: 14.5 }}>{fmt(order.part_name)}</span>
+          {Number(order.quantity) > 1 && (
+            <span style={{ fontSize: 12, color: T.dim }}>×{order.quantity}</span>
+          )}
+        </div>
+        <div style={{ color: T.dim, fontSize: 12.5, marginTop: 4 }}>
+          {order.registration}
+          {dealer ? ` · ${dealer}` : ' · no supplier set'}
+        </div>
+        <div style={{ color: '#fcd34d', fontSize: 12, marginTop: 3, fontWeight: 600 }}>{reason}</div>
+      </button>
+      {order.dealership_phone && (
+        <a href={`tel:${order.dealership_phone.replace(/\s/g, '')}`}
+          title={`Call ${dealer}`}
+          style={{ ...addChip, height: 40, color: T.accent, textDecoration: 'none' }}>
+          <Phone size={16} />
+        </a>
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+// SUPPLIERS — the dealerships, and how to reach them
+// ------------------------------------------------------------
+// Alphabetical here, deliberately, even though every other list of dealerships
+// in the app is most-used-first. That ranking is for picking a supplier while
+// standing at a car; this is a contact book, where you already know the name
+// you're looking for and want it where the alphabet says it is.
+function SuppliersPage({ dealerships, onSaved }) {
+  const [editing, setEditing] = useState(null);
+  const sorted = [...dealerships].sort((a, b) => a.name.localeCompare(b.name));
+  const missing = sorted.filter(d => !d.email && !d.phone).length;
+
+  return (
+    <>
+      <Header title="Suppliers" subtitle={`${sorted.length} dealerships`} />
+      <div style={{ padding: 18 }}>
+        {missing > 0 && (
+          <div style={{ background: T.panel, border: `1px solid ${T.line}`,
+            borderLeft: '3px solid #fcd34d', borderRadius: 12, padding: 14, marginBottom: 18,
+            fontSize: 13, color: T.dim, lineHeight: 1.5 }}>
+            {missing} of these {missing === 1 ? 'has' : 'have'} no phone or email saved.
+            A supplier with an email can be sent a whole car&apos;s parts order in one tap
+            from the vehicle page; one with a phone number can be called from the
+            chasing list.
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gap: 8 }}>
+          {sorted.map(d => (
+            <button key={d.id} onClick={() => setEditing(d)} style={cardBtn}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = T.accent; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = T.line; }}>
+              <div style={{ textAlign: 'left', minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>{d.name}</div>
+                <div style={{ display: 'flex', gap: 12, marginTop: 4, fontSize: 12.5,
+                  color: T.dim, flexWrap: 'wrap' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Phone size={12} />{d.phone || '—'}
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+                    <Mail size={12} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.email || '—'}</span>
+                  </span>
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                {Number(d.order_count) > 0 && (
+                  <span style={{ fontSize: 11.5, color: T.dim }}>
+                    {d.order_count} order{Number(d.order_count) === 1 ? '' : 's'}
+                  </span>
+                )}
+                <Pencil size={15} color={T.dim} />
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {editing && (
+        <SupplierModal
+          dealership={editing}
+          onCancel={() => setEditing(null)}
+          onSave={async fields => {
+            onSaved(await updateDealership(editing.id, fields));
+            setEditing(null);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function SupplierModal({ dealership, onCancel, onSave }) {
+  const [name, setName]   = useState(dealership.name || '');
+  const [phone, setPhone] = useState(dealership.phone || '');
+  const [email, setEmail] = useState(dealership.email || '');
+  const [error, setError] = useState('');
+
+  return (
+    <Modal title={dealership.name} onClose={onCancel}>
+      <Field label="Name" required>
+        <input value={name} onChange={e => setName(e.target.value)} style={inputStyle} />
+      </Field>
+      <Field label="Phone">
+        <input type="tel" inputMode="tel" value={phone} onChange={e => setPhone(e.target.value)}
+          placeholder="03 9xxx xxxx" style={inputStyle} />
+      </Field>
+      <Field label="Email">
+        <input type="email" inputMode="email" autoCapitalize="none" autoCorrect="off"
+          value={email} onChange={e => setEmail(e.target.value)}
+          placeholder="parts@dealership.com.au" style={inputStyle} />
+      </Field>
+      {error && <div style={{ fontSize: 13, color: '#f472b6' }}>{error}</div>}
+      <ActionButton
+        onClick={() => onSave({ name, phone, email })}
+        onError={err => setError(err.message || 'Could not save the supplier. Please try again.')}
+        pendingLabel="Saving…"
+        style={primaryBtn}
+      >
+        <Check size={18} /> Save supplier
+      </ActionButton>
+    </Modal>
   );
 }
 
@@ -1237,7 +1485,7 @@ function VehicleNotes({ notes, history, onSave }) {
   );
 }
 
-function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, activeRepairId, onSelectRepair, onSaveNotes, onBack, onAddPart, onPaint, onInvoices, onStatus, onEditOrder }) {
+function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, activeRepairId, onSelectRepair, onSaveNotes, onBack, onAddPart, onEmailOrder, onPaint, onInvoices, onStatus, onEditOrder }) {
   const [repairs, setRepairs]               = useState([]);
   const [repairModal, setRepairModal]       = useState(null);   // repair being renamed/closed
   const [errorId, setErrorId]               = useState(null);
@@ -1267,6 +1515,11 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
     : orders;
   const total   = repairOrders.reduce((s, o) => s + (o.unit_price || 0) * (o.quantity || 1), 0);
   const pending = repairOrders.filter(o => o.status === 'ordered').length;
+  // An order email is addressed to a supplier about a car, not about one
+  // accident on it, so it covers everything still outstanding — including a
+  // part left over from an earlier repair, which is exactly the one worth
+  // asking about. Counted across the whole vehicle for the same reason.
+  const vehiclePending = orders.filter(o => o.status === 'ordered').length;
 
   async function createRepair() {
     const repair = await addRepair(vehicle.id);
@@ -1326,6 +1579,12 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
         <button onClick={onAddPart} style={primaryBtn}>
           <Plus size={18} /> Order part
         </button>
+        {/* Only worth showing once there is something on order to send. */}
+        {vehiclePending > 0 && (
+          <button onClick={onEmailOrder} style={{ ...outlineBtn, width: '100%', marginTop: 10 }}>
+            <Mail size={18} /> Email order to supplier
+          </button>
+        )}
         <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
           <button onClick={onPaint} style={{ ...outlineBtn, flex: 1 }}>
             <Paintbrush size={18} /> Paint
@@ -1416,6 +1675,7 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
         <EditOrderModal
           order={editingOrder}
           dealerships={dealerships}
+          make={vehicle.make}
           onCancel={() => setEditingOrder(null)}
           onSave={async fields => {
             await onEditOrder(editingOrder.id, fields);
@@ -1547,7 +1807,33 @@ function RepairModal({ repair, onCancel, onSave }) {
   );
 }
 
-function EditOrderModal({ order, dealerships, onCancel, onSave }) {
+// The supplier list arrives ranked for the car on screen (see the dealerships
+// route), and this splits it where the ranking changes meaning: the ones this
+// make has been ordered from before, then everyone else. Without the split the
+// order looks arbitrary — a dealership near the top for a good reason is
+// indistinguishable from one that drifted there. Cars with no make, and makes
+// nobody has ordered for yet, get the plain most-used-first list.
+function DealershipSelect({ dealerships, make, value, onChange }) {
+  const familiar = dealerships.filter(d => Number(d.make_count) > 0);
+  const rest     = dealerships.filter(d => !Number(d.make_count));
+  const option   = d => <option key={d.id} value={String(d.id)}>{d.name}</option>;
+
+  return (
+    <Field label="Dealership">
+      <select value={value} onChange={e => onChange(e.target.value)} style={inputStyle}>
+        <option value="">Not set</option>
+        {familiar.length > 0 ? (
+          <>
+            <optgroup label={`Used for ${make}`}>{familiar.map(option)}</optgroup>
+            <optgroup label="Other dealerships">{rest.map(option)}</optgroup>
+          </>
+        ) : dealerships.map(option)}
+      </select>
+    </Field>
+  );
+}
+
+function EditOrderModal({ order, dealerships, make, onCancel, onSave }) {
   const [dealershipId, setDealershipId] = useState(order.dealership_id ? String(order.dealership_id) : '');
   const [quantity, setQuantity]         = useState(order.quantity ?? 1);
   const [price, setPrice]               = useState(order.unit_price != null ? String(order.unit_price) : '');
@@ -1571,12 +1857,10 @@ function EditOrderModal({ order, dealerships, onCancel, onSave }) {
       <Field label="Part number">
         <input value={partNumber} onChange={e => setPartNumber(e.target.value)} style={inputStyle} />
       </Field>
-      <Field label="Dealership">
-        <select value={dealershipId} onChange={e => setDealershipId(e.target.value)} style={inputStyle}>
-          <option value="">Not set</option>
-          {dealerships.map(d => <option key={d.id} value={String(d.id)}>{d.name}</option>)}
-        </select>
-      </Field>
+      <DealershipSelect
+        dealerships={dealerships} make={make}
+        value={dealershipId} onChange={setDealershipId}
+      />
       <div style={{ display: 'flex', gap: 12 }}>
         <Field label="Quantity" style={{ flex: 1 }}>
           <input type="number" min={1} value={quantity}
@@ -1600,6 +1884,202 @@ function EditOrderModal({ order, dealerships, onCancel, onSave }) {
         <Check size={18} /> Save changes
       </ActionButton>
     </Modal>
+  );
+}
+
+// ------------------------------------------------------------
+// ORDER BY EMAIL — one message per supplier, for one car
+// ------------------------------------------------------------
+// Written the way the order would be dictated over the phone, because that is
+// what it replaces: what's needed, then the car it's for, then the two things
+// the parts desk always has to ring back about — price and a date.
+function orderEmailSubject(vehicle) {
+  const desc = [vehicle.make, vehicle.model].filter(Boolean).join(' ');
+  return `Parts order — ${vehicle.registration}${desc ? ` (${desc})` : ''}`;
+}
+
+function orderEmailBody(vehicle, lines) {
+  const desc = [vehicle.make, vehicle.model].filter(Boolean).join(' ');
+  return [
+    'Hi,',
+    '',
+    'Could you please supply the following:',
+    '',
+    ...lines.map(o => {
+      const qty = Number(o.quantity) || 1;
+      const number = o.part_number ? `  (part no. ${o.part_number})` : '';
+      return `  ${qty} x ${fmt(o.part_name)}${number}`;
+    }),
+    '',
+    `Vehicle: ${desc || '(details to follow)'}`,
+    `Rego: ${vehicle.registration}`,
+    '',
+    'Could you please confirm the price and expected delivery date.',
+    '',
+    'Thanks,',
+    'MB Smash Repair',
+  ].join('\n');
+}
+
+function OrderEmailPage({ vehicle, orders, lookupDealer, onSavedDealership, onBack }) {
+  const pending = orders.filter(o => o.status === 'ordered');
+  // Everything starts ticked: the common case is ordering the lot, and it is
+  // easier to untick the one part already phoned through than to tick six.
+  const [selected, setSelected] = useState(() => new Set(pending.map(o => o.id)));
+  const [copied, setCopied] = useState(null);
+
+  const toggle = id => setSelected(cur => {
+    const next = new Set(cur);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+  // One group per supplier, biggest order first, with the parts nobody has
+  // assigned a supplier to last — they can't be sent anywhere until they are.
+  const groups = [];
+  for (const order of pending) {
+    const key = order.dealership_id ? String(order.dealership_id) : 'none';
+    let group = groups.find(g => g.key === key);
+    if (!group) {
+      groups.push(group = {
+        key,
+        dealership: order.dealership_id ? lookupDealer(order.dealership_id) : null,
+        orders: [],
+      });
+    }
+    group.orders.push(order);
+  }
+  groups.sort((a, b) =>
+    (a.dealership ? 0 : 1) - (b.dealership ? 0 : 1) || b.orders.length - a.orders.length);
+
+  async function copyBody(group, lines) {
+    const text = orderEmailBody(vehicle, lines);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(group.key);
+      setTimeout(() => setCopied(cur => (cur === group.key ? null : cur)), 2000);
+    } catch {
+      // Clipboard access can be refused (an insecure origin, a locked-down
+      // webview). Falling back to a prompt still gets the text into the
+      // user's hands, which is the whole job.
+      window.prompt('Copy the order:', text);
+    }
+  }
+
+  return (
+    <>
+      <Header title="Email order" subtitle={`for ${vehicle.registration}`} onBack={onBack} />
+      <div style={{ padding: 18 }}>
+        {pending.length === 0 ? (
+          <div style={{ textAlign: 'center', color: T.dim, border: `1px dashed ${T.line}`,
+            borderRadius: 12, padding: '26px 12px', fontSize: 14 }}>
+            Nothing is on order for {vehicle.registration}.
+          </div>
+        ) : groups.map(group => {
+          const lines = group.orders.filter(o => selected.has(o.id));
+          const email = group.dealership?.email;
+
+          return (
+            <div key={group.key} style={{ background: T.panel, border: `1px solid ${T.line}`,
+              borderLeft: `3px solid ${group.dealership ? T.accent : '#fcd34d'}`,
+              borderRadius: 12, padding: 16, marginBottom: 14 }}>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>
+                {group.dealership?.name || 'No supplier set'}
+              </div>
+
+              {!group.dealership ? (
+                <div style={{ fontSize: 12.5, color: T.dim, marginTop: 6, lineHeight: 1.5 }}>
+                  These parts have no supplier on them, so there is nobody to send them to.
+                  Set one from the part on the vehicle page.
+                </div>
+              ) : email ? (
+                <div style={{ fontSize: 12.5, color: T.dim, marginTop: 4 }}>{email}</div>
+              ) : (
+                <AddSupplierEmail dealership={group.dealership} onSaved={onSavedDealership} />
+              )}
+
+              <div style={{ display: 'grid', gap: 2, marginTop: 12 }}>
+                {group.orders.map(o => (
+                  <label key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '7px 0', cursor: 'pointer', fontSize: 14 }}>
+                    <input type="checkbox" checked={selected.has(o.id)} onChange={() => toggle(o.id)}
+                      style={{ width: 18, height: 18, accentColor: T.accent, flexShrink: 0 }} />
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      {Number(o.quantity) > 1 && (
+                        <span style={{ color: T.dim }}>{o.quantity} × </span>
+                      )}
+                      {fmt(o.part_name)}
+                      {o.part_number && (
+                        <span style={{ color: T.dim, fontSize: 12.5 }}> · {o.part_number}</span>
+                      )}
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+                <a
+                  href={lines.length && email
+                    ? `mailto:${encodeURIComponent(email)}`
+                      + `?subject=${encodeURIComponent(orderEmailSubject(vehicle))}`
+                      + `&body=${encodeURIComponent(orderEmailBody(vehicle, lines))}`
+                    : undefined}
+                  style={{ ...primaryBtn, flex: 1, textDecoration: 'none',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    opacity: lines.length && email ? 1 : 0.4,
+                    pointerEvents: lines.length && email ? 'auto' : 'none' }}
+                >
+                  <Mail size={17} /> Send {lines.length || ''}
+                </a>
+                <button onClick={() => copyBody(group, lines)} disabled={!lines.length}
+                  title="Copy the order text"
+                  style={{ ...addChip, height: 46, width: 52, opacity: lines.length ? 1 : 0.4,
+                    color: copied === group.key ? T.accent : T.dim }}>
+                  {copied === group.key ? <Check size={17} /> : <Copy size={17} />}
+                </button>
+              </div>
+              {group.dealership && !email && (
+                <div style={{ fontSize: 12, color: T.dim, marginTop: 8 }}>
+                  Add an email above to send, or copy the order and paste it wherever you like.
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// Catching the missing address at the moment it blocks the send, rather than
+// sending the user off to the Suppliers tab and back.
+function AddSupplierEmail({ dealership, onSaved }) {
+  const [value, setValue] = useState('');
+  const [error, setError] = useState('');
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input value={value} onChange={e => setValue(e.target.value)}
+          type="email" inputMode="email" autoCapitalize="none" autoCorrect="off"
+          placeholder={`Email for ${dealership.name}`} style={{ ...inputStyle, flex: 1 }} />
+        <ActionButton
+          onClick={async () => {
+            if (!value.trim()) return;
+            setError('');
+            onSaved(await updateDealership(dealership.id, {
+              phone: dealership.phone, email: value,
+            }));
+          }}
+          onError={err => setError(err.message || 'Could not save that address.')}
+          pendingLabel=""
+          style={{ ...addChip, color: T.accent }}
+        >
+          <Check size={16} />
+        </ActionButton>
+      </div>
+      {error && <div style={{ fontSize: 12.5, color: '#f472b6', marginTop: 6 }}>{error}</div>}
+    </div>
   );
 }
 
@@ -1828,12 +2308,10 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
             </div>
 
             <div style={{ display: 'grid', gap: 14, marginTop: 16 }}>
-              <Field label="Dealership">
-                <select value={dealershipId} onChange={e => setDealershipId(e.target.value)} style={inputStyle}>
-                  <option value="">Not set</option>
-                  {dealerships.map(d => <option key={d.id} value={String(d.id)}>{d.name}</option>)}
-                </select>
-              </Field>
+              <DealershipSelect
+                dealerships={dealerships} make={vehicle.make}
+                value={dealershipId} onChange={setDealershipId}
+              />
               <div style={{ display: 'flex', gap: 12 }}>
                 <Field label="Quantity" style={{ flex: 1 }}>
                   <input type="number" min={1} value={quantity}
@@ -1846,6 +2324,24 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
               </div>
               <Field label="Expected delivery">
                 <input type="date" value={expected} onChange={e => setExpected(e.target.value)} style={inputStyle} />
+                {/* Almost nothing on order has a delivery date, so nothing can
+                    be called late. Typing one into a date picker on a phone is
+                    the reason why — these are the three answers a parts desk
+                    actually gives, one tap each. */}
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  {[['3 days', 3], ['1 week', 7], ['2 weeks', 14]].map(([label, days]) => (
+                    <button key={days} type="button" onClick={() => setExpected(inDays(days))}
+                      style={{
+                        flex: 1, padding: '8px 4px', borderRadius: 10, cursor: 'pointer',
+                        fontSize: 12.5, fontWeight: 600,
+                        background: expected === inDays(days) ? T.panelHi : 'transparent',
+                        border: `1px solid ${expected === inDays(days) ? T.accent : T.line}`,
+                        color: expected === inDays(days) ? T.accent : T.dim,
+                      }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </Field>
             </div>
 
