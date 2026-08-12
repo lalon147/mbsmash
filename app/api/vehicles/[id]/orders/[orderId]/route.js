@@ -13,6 +13,31 @@ const EDITABLE = {
   expected_date: v => v || null,
 };
 
+/**
+ * A part number learned from an invoice is worth more than one order. Write it
+ * back to the catalog so the next car needing this part opens with the number
+ * already filled in, instead of someone reading it off a box a second time.
+ *
+ * Only ever fills a blank: a catalog number that is already set was put there
+ * deliberately and is not overwritten by whatever was typed on one order. The
+ * NOT EXISTS guards the catalog's unique-part-number index — two parts claiming
+ * the same number is a mistake worth ignoring rather than a 500.
+ */
+async function teachCatalogPartNumber(client, order) {
+  if (!order.catalog_part_id || !order.part_number) return;
+  await client.query(
+    `UPDATE parts_catalog p
+        SET part_number = $1
+      WHERE p.id = $2
+        AND p.part_number IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM parts_catalog other
+           WHERE other.part_number = $1 AND other.id <> p.id
+        )`,
+    [order.part_number, order.catalog_part_id],
+  );
+}
+
 export async function PATCH(request, { params }) {
   const { id, orderId } = await params;
   const user = await getSessionUser(request);
@@ -21,40 +46,36 @@ export async function PATCH(request, { params }) {
   const body = await request.json();
 
   try {
-    if (body.status !== undefined) {
-      const updated = await withAudit(async client => {
-        const { rows: [before] } = await client.query(
-          `SELECT * FROM orders WHERE id = $1 AND vehicle_id = $2 FOR UPDATE`,
-          [orderId, id],
-        );
-        if (!before) return null;
+    // Status and the plain columns are applied in one statement, because the
+    // screen that marks a part received also asks what it cost — and that is
+    // one thing that happened, not two. Splitting it would put two rows in the
+    // history for a single tap, and leave the price behind if the second call
+    // failed.
+    const sets = [];
+    const values = [];
+    const changed = [];
 
-        // Both placeholders are cast: an untyped $1 shared between the enum
-        // column and the CASE comparison makes Postgres give up deducing a type.
-        const { rows: [after] } = await client.query(
-          `UPDATE orders
-              SET status = $1::order_status,
-                  received_date = CASE WHEN $1::order_status = 'received'
-                                       THEN current_date ELSE received_date END
-            WHERE id = $2 AND vehicle_id = $3
-            RETURNING *`,
-          [body.status, orderId, id],
-        );
-
-        await logChange(client, {
-          entityType: 'order', entityId: Number(orderId), vehicleId: Number(id),
-          user, action: 'updated',
-          changes: diffFields(before, after, ['status']),
-        });
-        return after;
-      });
-
-      if (!updated) return NextResponse.json({ error: 'Part not found.' }, { status: 404 });
-      return NextResponse.json(updated);
+    for (const field of Object.keys(EDITABLE)) {
+      if (body[field] === undefined) continue;
+      values.push(EDITABLE[field](body[field]));
+      sets.push(`${field} = $${values.length}`);
+      changed.push(field);
     }
 
-    const fields = Object.keys(EDITABLE).filter(f => body[f] !== undefined);
-    if (fields.length === 0) {
+    if (body.status !== undefined) {
+      values.push(body.status);
+      // Cast once and reuse: an untyped placeholder shared between the enum
+      // column and the CASE comparison makes Postgres give up deducing a type.
+      const status = `$${values.length}::order_status`;
+      sets.push(`status = ${status}`);
+      sets.push(
+        `received_date = CASE WHEN ${status} = 'received'
+                              THEN current_date ELSE received_date END`,
+      );
+      changed.push('status');
+    }
+
+    if (sets.length === 0) {
       return NextResponse.json({ error: 'Nothing to update.' }, { status: 400 });
     }
 
@@ -65,21 +86,20 @@ export async function PATCH(request, { params }) {
       );
       if (!before) return null;
 
-      const values = fields.map(f => EDITABLE[f](body[f]));
-      const sets = fields.map((f, i) => `${f} = $${i + 1}`);
       values.push(orderId, id);
-
       const { rows: [after] } = await client.query(
         `UPDATE orders SET ${sets.join(', ')}
-          WHERE id = $${fields.length + 1} AND vehicle_id = $${fields.length + 2}
+          WHERE id = $${values.length - 1} AND vehicle_id = $${values.length}
           RETURNING *`,
         values,
       );
 
+      if (changed.includes('part_number')) await teachCatalogPartNumber(client, after);
+
       await logChange(client, {
         entityType: 'order', entityId: Number(orderId), vehicleId: Number(id),
         user, action: 'updated',
-        changes: diffFields(before, after, fields),
+        changes: diffFields(before, after, changed),
       });
       return after;
     });

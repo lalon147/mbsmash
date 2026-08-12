@@ -1663,6 +1663,7 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
   const [errorId, setErrorId]               = useState(null);
   const [errorMsg, setErrorMsg]             = useState('');
   const [editingOrder, setEditingOrder]     = useState(null);
+  const [receiving, setReceiving]           = useState(null);
   const { byEntity, reload: reloadHistory }  = useVehicleHistory(vehicle.id);
 
   useEffect(() => {
@@ -1715,6 +1716,16 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
       setErrorId(orderId);
       setErrorMsg(err?.message || 'Could not update the part. Please try again.');
     }
+  }
+
+  // Arriving and costing something are one event, so they go in one update —
+  // the part is never briefly received at the old price, and the history shows
+  // a single change rather than two.
+  async function receivePart(orderId, fields) {
+    setErrorId(null);
+    await onEditOrder(orderId, { status: 'received', ...fields });
+    reloadHistory();
+    setReceiving(null);
   }
 
   return (
@@ -1815,7 +1826,9 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
 
                   <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                     {o.status === 'ordered' && (
-                      <button onClick={() => changeStatus(o.id, 'received')} style={miniBtn(T.accent)}>
+                      // Asks what it cost on the way past, rather than flipping
+                      // the badge and losing the invoice in someone's hand.
+                      <button onClick={() => setReceiving(o)} style={miniBtn(T.accent)}>
                         <Check size={14} /> Received
                       </button>
                     )}
@@ -1842,6 +1855,14 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
           </div>
         )}
       </div>
+
+      {receiving && (
+        <ReceiveModal
+          order={receiving}
+          onCancel={() => setReceiving(null)}
+          onReceive={fields => receivePart(receiving.id, fields)}
+        />
+      )}
 
       {editingOrder && (
         <EditOrderModal
@@ -1985,13 +2006,13 @@ function RepairModal({ repair, onCancel, onSave }) {
 // order looks arbitrary — a dealership near the top for a good reason is
 // indistinguishable from one that drifted there. Cars with no make, and makes
 // nobody has ordered for yet, get the plain most-used-first list.
-function DealershipSelect({ dealerships, make, value, onChange }) {
+function DealershipSelect({ dealerships, make, value, onChange, required }) {
   const familiar = dealerships.filter(d => Number(d.make_count) > 0);
   const rest     = dealerships.filter(d => !Number(d.make_count));
   const option   = d => <option key={d.id} value={String(d.id)}>{d.name}</option>;
 
   return (
-    <Field label="Dealership">
+    <Field label="Dealership" required={required}>
       <select value={value} onChange={e => onChange(e.target.value)} style={inputStyle}>
         <option value="">Not set</option>
         {familiar.length > 0 ? (
@@ -2002,6 +2023,71 @@ function DealershipSelect({ dealerships, make, value, onChange }) {
         ) : dealerships.map(option)}
       </select>
     </Field>
+  );
+}
+
+// The part has arrived and the invoice is in someone's hand — the one moment
+// its real price and part number are both known and both written down in front
+// of them. Marking it received used to ask nothing, which is where most of the
+// missing prices went. Skipping is one tap, because a prompt that can't be
+// dismissed on a busy day gets answered with a wrong number.
+function ReceiveModal({ order, onCancel, onReceive }) {
+  const [price, setPrice]           = useState(order.unit_price != null ? String(order.unit_price) : '');
+  const [partNumber, setPartNumber] = useState(order.part_number || '');
+  const [error, setError]           = useState('');
+
+  const qty = Number(order.quantity) || 1;
+  const total = price ? Number(price) * qty : null;
+
+  return (
+    <Modal title={fmt(order.part_name)} onClose={onCancel}>
+      <div style={{ fontSize: 13, color: T.dim, marginTop: -4, lineHeight: 1.5 }}>
+        Off the invoice, while you have it.
+      </div>
+
+      <Field label={qty > 1 ? `Unit price (${qty} ordered)` : 'Unit price'}>
+        <input type="number" step="0.01" inputMode="decimal" autoFocus
+          value={price} onChange={e => setPrice(e.target.value)}
+          placeholder="0.00" style={inputStyle} />
+        {total != null && qty > 1 && (
+          <div style={{ fontSize: 12.5, color: T.dim, marginTop: 6 }}>
+            ${total.toFixed(2)} for {qty}
+          </div>
+        )}
+      </Field>
+
+      <Field label="Part number">
+        <input value={partNumber} onChange={e => setPartNumber(e.target.value)}
+          placeholder="As printed on the invoice" style={inputStyle} />
+        <div style={{ fontSize: 12, color: T.dim, marginTop: 6 }}>
+          Saved against {fmt(order.part_name)} in the catalog, so the next one is
+          already filled in.
+        </div>
+      </Field>
+
+      {error && <div style={{ fontSize: 13, color: '#f472b6' }}>{error}</div>}
+
+      <ActionButton
+        onClick={() => onReceive({
+          unit_price:  price === '' ? null : Number(price),
+          part_number: partNumber.trim() || null,
+        })}
+        onError={err => setError(err.message || 'Could not save. Please try again.')}
+        pendingLabel="Saving…"
+        style={primaryBtn}
+      >
+        <Check size={18} /> Mark received
+      </ActionButton>
+
+      <ActionButton
+        onClick={() => onReceive({})}
+        onError={err => setError(err.message || 'Could not save. Please try again.')}
+        pendingLabel="Saving…"
+        style={{ ...outlineBtn, width: '100%' }}
+      >
+        Received — don&apos;t have the invoice
+      </ActionButton>
+    </Modal>
   );
 }
 
@@ -2273,6 +2359,10 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
   const [photoError, setPhotoError] = useState('');
   const [lightbox, setLightbox]     = useState(null);
   const [placeError, setPlaceError] = useState('');
+  // Set once the "no supplier" warning has been shown, so a second tap goes
+  // through. Cleared if a supplier is chosen, and when a different part is
+  // picked — each part gets asked about on its own terms.
+  const [noSupplierAck, setNoSupplierAck] = useState(false);
   const searchReq = useRef(0);
 
   // Debounced so typing doesn't fire a request per keystroke, and stale
@@ -2325,6 +2415,7 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
     setDealershipId(p.default_dealership_id ? String(p.default_dealership_id) : '');
     setPrice(p.typical_price != null ? String(p.typical_price) : '');
     setQuantity(1); setExpected('');
+    setNoSupplierAck(false);
   }
   async function saveNewPart() {
     if (!newPartName.trim()) return;
@@ -2335,6 +2426,14 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
   }
   async function confirm() {
     setPlaceError('');
+    // Whoever placed the order knows who they placed it with — it is the one
+    // fact that is always available at this moment and cannot be recovered
+    // later. So it gets asked for once, plainly, and then gets out of the way:
+    // a form that refuses to save is a form that gets written on paper.
+    if (!dealershipId && !noSupplierAck) {
+      setNoSupplierAck(true);
+      return;
+    }
     const order = await placeOrder({
       vehicle_id:      vehicle.id,
       repair_id:       repairId || null,
@@ -2481,8 +2580,9 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
 
             <div style={{ display: 'grid', gap: 14, marginTop: 16 }}>
               <DealershipSelect
+                required
                 dealerships={dealerships} make={vehicle.make}
-                value={dealershipId} onChange={setDealershipId}
+                value={dealershipId} onChange={id => { setDealershipId(id); setNoSupplierAck(false); }}
               />
               <div style={{ display: 'flex', gap: 12 }}>
                 <Field label="Quantity" style={{ flex: 1 }}>
@@ -2517,6 +2617,15 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
               </Field>
             </div>
 
+            {noSupplierAck && !dealershipId && (
+              <div style={{ background: T.panel, border: `1px solid ${T.line}`,
+                borderLeft: '3px solid #fcd34d', borderRadius: 12, padding: 14, marginTop: 16,
+                fontSize: 13, color: T.dim, lineHeight: 1.5 }}>
+                No supplier picked. Without one this part can&apos;t be emailed to
+                anyone or chased when it&apos;s late, and nobody will remember later
+                who it came from. Tap again to add it anyway.
+              </div>
+            )}
             {placeError && (
               <div style={{ fontSize: 13, color: '#f472b6', marginTop: 12 }}>{placeError}</div>
             )}
@@ -2526,7 +2635,9 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
               pendingLabel="Adding…"
               style={{ ...primaryBtn, marginTop: 20 }}
             >
-              <Check size={18} /> Add to {vehicle.registration}
+              {noSupplierAck && !dealershipId
+                ? <>Add without a supplier</>
+                : <><Check size={18} /> Add to {vehicle.registration}</>}
             </ActionButton>
           </>
         )}
