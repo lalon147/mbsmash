@@ -1,6 +1,14 @@
 import { NextResponse } from 'next/server';
 import pool from '@/lib/db';
 
+// Every other route in this app reads the session off the request, which is
+// what tells Next the response depends on who is asking. This one asks for
+// nothing — no parameters, no cookies — so Next decided it could never differ,
+// ran these queries at build time and served the answer as a static file. The
+// dashboard was showing the shop's numbers as they stood at the last deploy.
+// Anything read from the database at request time has to say so.
+export const dynamic = 'force-dynamic';
+
 // A part with no expected date isn't overdue on any particular day, so it would
 // never surface on its own — and most parts don't get one. Treat silence past
 // this many days as late enough to be worth a phone call.

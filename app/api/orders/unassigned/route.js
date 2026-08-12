@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 import pool from '@/lib/db';
 
+// Reads the database and takes nothing from the request, so Next would
+// otherwise run it once at build time and serve the answer as a static file —
+// leaving the "parts with no supplier" prompt stuck on whatever the count was
+// on deploy day, however many were assigned afterwards. See /api/dashboard.
+export const dynamic = 'force-dynamic';
+
 // Parts still on order with nobody recorded as supplying them, each carrying
 // the supplier this car's make has most often been ordered from.
 //
