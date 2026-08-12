@@ -288,6 +288,10 @@ const STATUS = {
   ordered:  { label: 'Ordered',   fg: '#fcd34d', bg: 'rgba(252,211,77,.12)',  bd: 'rgba(252,211,77,.4)' },
   received: { label: 'Received',  fg: '#a78bfa', bg: 'rgba(167,139,250,.12)', bd: 'rgba(167,139,250,.4)' },
   returned: { label: 'To return', fg: '#f472b6', bg: 'rgba(244,114,182,.12)', bd: 'rgba(244,114,182,.4)' },
+  // A part that was never going to come. The column has always allowed it; now
+  // the chase list can set it, so it needs a badge of its own — without one it
+  // fell through to "Ordered" and the part looked like it was still on its way.
+  cancelled: { label: 'Cancelled', fg: '#94a3b8', bg: 'rgba(148,163,184,.12)', bd: 'rgba(148,163,184,.4)' },
 };
 
 // Part names come from DB in ALL CAPS — convert to Title Case, preserving
@@ -627,7 +631,7 @@ export default function App() {
       }}>
 
         {view === 'main' && tab === 'dashboard' && (
-          <Dashboard onOpenVehicle={openVehicle} />
+          <Dashboard onOpenVehicle={openVehicle} onOrdersChanged={invalidateOrders} />
         )}
 
         {view === 'main' && tab === 'vehicles' && (
@@ -816,10 +820,11 @@ function DashboardClock() {
   );
 }
 
-// How many late parts the dashboard shows before asking to be expanded.
-const CHASE_PREVIEW = 5;
+// How many cars the chase list shows before asking to be expanded. Counted in
+// cars, not parts: one car with seven late parts is one phone call.
+const CHASE_PREVIEW = 4;
 
-function Dashboard({ onOpenVehicle }) {
+function Dashboard({ onOpenVehicle, onOrdersChanged }) {
   const [stats, setStats]   = useState(dashboardCache?.stats ?? null);
   const [recent, setRecent] = useState(dashboardCache?.recent ?? []);
   const [chasing, setChasing] = useState(dashboardCache?.chasing ?? []);
@@ -835,6 +840,49 @@ function Dashboard({ onOpenVehicle }) {
     getCurrentUser().then(u => { if (alive) setMe(u); }).catch(() => {});
     return () => { alive = false; };
   }, []);
+
+  // One card per car. The rows arrive worst-part-first, so each car first shows
+  // up at its own worst part, and taking them in that order puts the car worth
+  // ringing about at the top.
+  const chaseGroups = [];
+  for (const order of chasing) {
+    let group = chaseGroups.find(g => String(g.vehicle.id) === String(order.vehicle_id));
+    if (!group) {
+      chaseGroups.push(group = {
+        vehicle: { id: order.vehicle_id, registration: order.registration,
+                   make: order.make, model: order.model },
+        orders: [],
+      });
+    }
+    group.orders.push(order);
+  }
+
+  // Settling a late part from the dashboard, without a trip to the vehicle
+  // page. A part that has sat here for weeks is nearly always one of two
+  // things: it turned up and nobody ticked it off, or it was never coming and
+  // the car went out without it. Both need saying, and neither was sayable from
+  // here — which is how the list filled with parts for cars long since fixed.
+  async function clearChase(orders, status) {
+    const ids = new Set(orders.map(o => o.id));
+    // The car's parts may already be sitting in the cache from an earlier
+    // visit. Drop them before the change lands, so opening the car afterwards
+    // doesn't paint the part as still on order.
+    for (const id of new Set(orders.map(o => o.vehicle_id))) onOrdersChanged?.(id);
+    try {
+      await Promise.all(orders.map(o => updateOrderStatus(o.vehicle_id, o.id, status)));
+      setChasing(cur => cur.filter(o => !ids.has(o.id)));
+    } finally {
+      // Re-ask the server for the totals above the list rather than keeping
+      // five counts in step by hand — five chances to get one wrong. In a
+      // `finally` because a batch that failed halfway through still moved some
+      // parts, and the screen should show which.
+      const d = await getDashboardStats().catch(() => null);
+      if (d) {
+        dashboardCache = d;
+        setStats(d.stats); setRecent(d.recent); setChasing(d.chasing || []);
+      }
+    }
+  }
 
   return (
     <>
@@ -864,7 +912,12 @@ function Dashboard({ onOpenVehicle }) {
             <StatCard label="Vehicles"       value={stats.vehicle_count}   accent="#794ee6" />
             <StatCard label="Parts Pending"  value={stats.pending_count}   accent="#fcd34d" />
             <StatCard label="Received Today" value={stats.received_today}  accent="#a78bfa" />
-            <StatCard label="Outstanding"    value={`$${Number(stats.outstanding_cost).toFixed(0)}`} accent="#f472b6" />
+            {/* Not "Outstanding": that reads as money owed, and this shop pays
+                suppliers before ordering as often as a week after, so an amount
+                owed is not something this number could ever know. It is the
+                cost of the parts currently out — stock in flight, not a bill. */}
+            <StatCard label="Value on Order" hint="parts not yet received"
+              value={`$${Number(stats.outstanding_cost).toFixed(0)}`} accent="#f472b6" />
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 22 }}>
@@ -873,28 +926,28 @@ function Dashboard({ onOpenVehicle }) {
           </div>
         )}
 
-        {chasing.length > 0 && (
+        {chaseGroups.length > 0 && (
           <div style={{ marginBottom: 22 }}>
-            <SectionLabel>Chasing ({stats?.chasing_count ?? chasing.length})</SectionLabel>
-            <div style={{ display: 'grid', gap: 8 }}>
-              {/* A few at a time. The whole list at once is a wall that pushes
-                  everything else off the screen, and the top of it is the part
-                  that has been waiting longest anyway. */}
-              {(showAllChasing ? chasing : chasing.slice(0, CHASE_PREVIEW)).map(o => (
-                <ChaseRow key={o.id} order={o} onOpenVehicle={onOpenVehicle} />
+            <SectionLabel>
+              {`Chasing (${stats?.chasing_count ?? chasing.length} across `
+                + `${chaseGroups.length} car${chaseGroups.length === 1 ? '' : 's'})`}
+            </SectionLabel>
+            <div style={{ display: 'grid', gap: 10 }}>
+              {/* A few cars at a time. The whole list at once is a wall that
+                  pushes everything else off the screen, and the top of it is
+                  the car that has been waiting longest anyway. */}
+              {(showAllChasing ? chaseGroups : chaseGroups.slice(0, CHASE_PREVIEW)).map(g => (
+                <ChaseCar key={g.vehicle.id} group={g}
+                  onOpenVehicle={onOpenVehicle} onClear={clearChase} />
               ))}
             </div>
-            {chasing.length > CHASE_PREVIEW && (
+            {chaseGroups.length > CHASE_PREVIEW && (
               <button onClick={() => setShowAllChasing(v => !v)} style={{
                 width: '100%', marginTop: 8, padding: '10px', borderRadius: 10,
                 background: 'transparent', border: `1px dashed ${T.line}`,
                 color: T.dim, fontSize: 13, fontWeight: 600, cursor: 'pointer',
               }}>
-                {showAllChasing
-                  ? 'Show fewer'
-                  : `Show all ${chasing.length}${
-                      (stats?.chasing_count ?? 0) > chasing.length
-                        ? ` of ${stats.chasing_count}` : ''}`}
+                {showAllChasing ? 'Show fewer' : `Show all ${chaseGroups.length} cars`}
               </button>
             )}
           </div>
@@ -937,7 +990,7 @@ function Dashboard({ onOpenVehicle }) {
   );
 }
 
-function StatCard({ label, value, accent }) {
+function StatCard({ label, value, accent, hint }) {
   return (
     <div style={{
       background: T.panel, border: `1px solid ${T.line}`, borderLeft: `3px solid ${accent}`,
@@ -945,6 +998,11 @@ function StatCard({ label, value, accent }) {
     }}>
       <div style={{ fontSize: 24, fontWeight: 800, color: accent, lineHeight: 1 }}>{value}</div>
       <div style={{ fontSize: 12, color: T.dim, marginTop: 6, fontWeight: 600 }}>{label}</div>
+      {hint && (
+        <div style={{ fontSize: 11, color: T.dim, marginTop: 3, opacity: 0.75, lineHeight: 1.35 }}>
+          {hint}
+        </div>
+      )}
     </div>
   );
 }
@@ -971,45 +1029,105 @@ function daysSince(isoDate) {
   return Math.round((today - then) / 86_400_000);
 }
 
+// Every late part for one car. Grouped this way because "that car went out
+// weeks ago" is the usual explanation for a part sitting here — and that is an
+// answer about the car, not about each part in turn. So the whole car clears in
+// one tap, and a list that had grown to forty-odd parts is a dozen decisions.
+function ChaseCar({ group, onOpenVehicle, onClear }) {
+  const { vehicle, orders } = group;
+  const [error, setError] = useState('');
+  const desc = [vehicle.make, vehicle.model].filter(Boolean).join(' ');
+
+  return (
+    <div style={{ background: T.panel, border: `1px solid ${T.line}`,
+      borderLeft: '3px solid #fcd34d', borderRadius: 12, padding: '12px 14px' }}>
+      <button onClick={() => onOpenVehicle(vehicle)} style={{
+        width: '100%', background: 'transparent', border: 'none', padding: 0,
+        cursor: 'pointer', color: 'inherit', font: 'inherit', textAlign: 'left',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>{vehicle.registration}</div>
+          <div style={{ color: T.dim, fontSize: 12.5, marginTop: 2 }}>
+            {orders.length} part{orders.length === 1 ? '' : 's'} late
+            {desc ? ` · ${desc}` : ''}
+          </div>
+        </div>
+        <ChevronRight size={16} color={T.dim} style={{ flexShrink: 0 }} />
+      </button>
+
+      <div style={{ marginTop: 6 }}>
+        {orders.map(o => (
+          <ChasePart key={o.id} order={o} onError={setError}
+            onClear={status => onClear([o], status)} />
+        ))}
+      </div>
+
+      {/* Only worth offering when it saves taps. One late part already has its
+          own Arrived button an inch above this. */}
+      {orders.length > 1 && (
+        <ActionButton
+          onClick={() => onClear(orders, 'received')}
+          onError={err => setError(err.message || 'Could not update. Please try again.')}
+          pendingLabel="Clearing…"
+          style={{ ...miniBtn(T.accent), width: '100%', flex: 'none', marginTop: 10 }}
+        >
+          <Check size={14} /> All {orders.length} arrived
+        </ActionButton>
+      )}
+
+      {error && (
+        <div style={{ fontSize: 12.5, color: '#f472b6', marginTop: 8 }}>{error}</div>
+      )}
+    </div>
+  );
+}
+
 // One part that should have arrived by now. It says which of the two ways it
 // got here — a delivery date that passed, or no date at all and long enough
 // that the silence is the problem — because the phone call is different: one
 // asks what happened to a promised date, the other asks for a date.
-function ChaseRow({ order, onOpenVehicle }) {
+function ChasePart({ order, onClear, onError }) {
   const late = Number(order.days_late);
   const dealer = order.dealership_name;
   const reason = order.expected_date
     ? `${late} day${late === 1 ? '' : 's'} past due`
     : `no delivery date, ordered ${daysSince(order.order_date)} days ago`;
+  const fail = err => onError(err.message || 'Could not update. Please try again.');
 
   return (
-    <div style={{ ...cardBtn, cursor: 'default', alignItems: 'flex-start' }}>
-      <button
-        onClick={() => onOpenVehicle({ id: order.vehicle_id, registration: order.registration,
-          make: order.make, model: order.model })}
-        style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
-          textAlign: 'left', minWidth: 0, flex: 1, color: 'inherit', font: 'inherit' }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-          <AlertTriangle size={14} color="#fcd34d" style={{ flexShrink: 0 }} />
-          <span style={{ fontWeight: 700, fontSize: 14.5 }}>{fmt(order.part_name)}</span>
-          {Number(order.quantity) > 1 && (
-            <span style={{ fontSize: 12, color: T.dim }}>×{order.quantity}</span>
-          )}
-        </div>
-        <div style={{ color: T.dim, fontSize: 12.5, marginTop: 4 }}>
-          {order.registration}
-          {dealer ? ` · ${dealer}` : ' · no supplier set'}
-        </div>
-        <div style={{ color: '#fcd34d', fontSize: 12, marginTop: 3, fontWeight: 600 }}>{reason}</div>
-      </button>
-      {order.dealership_phone && (
-        <a href={`tel:${order.dealership_phone.replace(/\s/g, '')}`}
-          title={`Call ${dealer}`}
-          style={{ ...addChip, height: 40, color: T.accent, textDecoration: 'none' }}>
-          <Phone size={16} />
-        </a>
-      )}
+    <div style={{ borderTop: `1px solid ${T.line}`, paddingTop: 10, marginTop: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+        <AlertTriangle size={13} color="#fcd34d" style={{ flexShrink: 0 }} />
+        <span style={{ fontWeight: 600, fontSize: 14 }}>{fmt(order.part_name)}</span>
+        {Number(order.quantity) > 1 && (
+          <span style={{ fontSize: 12, color: T.dim }}>×{order.quantity}</span>
+        )}
+      </div>
+      <div style={{ color: T.dim, fontSize: 12, marginTop: 3 }}>
+        <span style={{ color: '#fcd34d', fontWeight: 600 }}>{reason}</span>
+        {dealer ? ` · ${dealer}` : ' · no supplier set'}
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+        {order.dealership_phone && (
+          <a href={`tel:${order.dealership_phone.replace(/\s/g, '')}`}
+            style={{ ...miniBtn(T.accent), textDecoration: 'none' }}>
+            <Phone size={13} /> Call
+          </a>
+        )}
+        <ActionButton onClick={() => onClear('received')} onError={fail}
+          pendingLabel="…" style={miniBtn(T.accent)}>
+          <Check size={13} /> Arrived
+        </ActionButton>
+        {/* The other half of the answer. Without it the only way off this list
+            was a part turning up, so anything that never came sat here for
+            good. Cancelled keeps the row on the car with its reason visible,
+            rather than deleting the fact that it was ever ordered. */}
+        <ActionButton onClick={() => onClear('cancelled')} onError={fail}
+          pendingLabel="…" style={miniBtn(T.dim)}>
+          <X size={13} /> Not coming
+        </ActionButton>
+      </div>
     </div>
   );
 }
@@ -2163,10 +2281,13 @@ function orderEmailBody(vehicle, lines) {
     '',
     'Could you please supply the following:',
     '',
+    // A dash rather than an indent: Gmail lays the body out as HTML, where a
+    // run of leading spaces collapses to nothing and the list loses its shape.
+    // A dash survives whatever the reader's client does with whitespace.
     ...lines.map(o => {
       const qty = Number(o.quantity) || 1;
-      const number = o.part_number ? `  (part no. ${o.part_number})` : '';
-      return `  ${qty} x ${fmt(o.part_name)}${number}`;
+      const number = o.part_number ? ` (part no. ${o.part_number})` : '';
+      return `- ${qty} x ${fmt(o.part_name)}${number}`;
     }),
     '',
     `Vehicle: ${desc || '(details to follow)'}`,
@@ -2177,6 +2298,18 @@ function orderEmailBody(vehicle, lines) {
     'Thanks,',
     'MB Smash Repair',
   ].join('\n');
+}
+
+// The same body, wrapped for a mailto: link. RFC 6068 says the lines of a body
+// are separated by CRLF, and Gmail holds it to the letter — hand it bare LFs
+// and it drops every one of them, so a six-part order arrives as a single
+// run-on line. Outlook is forgiving and always looked fine, which is why this
+// went unnoticed. CRLF is correct for both.
+function mailtoHref(email, vehicle, lines) {
+  const body = orderEmailBody(vehicle, lines).replace(/\n/g, '\r\n');
+  return `mailto:${encodeURIComponent(email)}`
+    + `?subject=${encodeURIComponent(orderEmailSubject(vehicle))}`
+    + `&body=${encodeURIComponent(body)}`;
 }
 
 function OrderEmailPage({ vehicle, orders, lookupDealer, onSavedDealership, onBack }) {
@@ -2277,11 +2410,7 @@ function OrderEmailPage({ vehicle, orders, lookupDealer, onSavedDealership, onBa
 
               <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
                 <a
-                  href={lines.length && email
-                    ? `mailto:${encodeURIComponent(email)}`
-                      + `?subject=${encodeURIComponent(orderEmailSubject(vehicle))}`
-                      + `&body=${encodeURIComponent(orderEmailBody(vehicle, lines))}`
-                    : undefined}
+                  href={lines.length && email ? mailtoHref(email, vehicle, lines) : undefined}
                   style={{ ...primaryBtn, flex: 1, textDecoration: 'none',
                     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                     opacity: lines.length && email ? 1 : 0.4,
