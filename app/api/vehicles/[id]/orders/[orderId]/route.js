@@ -68,9 +68,18 @@ export async function PATCH(request, { params }) {
       // column and the CASE comparison makes Postgres give up deducing a type.
       const status = `$${values.length}::order_status`;
       sets.push(`status = ${status}`);
+      // received_date follows the status rather than being asked for. It is set
+      // the first time a part arrives and kept if it is marked received again,
+      // so a date entered for a part that turned up last month isn't quietly
+      // moved to today. A part sent back was still received, so 'returned'
+      // keeps its date; a part that goes back to 'ordered' or is cancelled was
+      // not, and hanging on to the date leaves a cancelled part looking as
+      // though it arrived.
       sets.push(
-        `received_date = CASE WHEN ${status} = 'received'
-                              THEN current_date ELSE received_date END`,
+        `received_date = CASE
+           WHEN ${status} = 'received'                 THEN coalesce(received_date, current_date)
+           WHEN ${status} IN ('ordered', 'cancelled')  THEN NULL
+           ELSE received_date END`,
       );
       changed.push('status');
     }
