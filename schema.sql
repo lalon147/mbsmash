@@ -125,7 +125,10 @@ create index invoice_lines_invoice_idx on invoice_lines (invoice_id);
 -- ------------------------------------------------------------
 -- Convenience view: cost per vehicle
 -- ------------------------------------------------------------
-create or replace view vehicle_cost_summary as
+-- security_invoker: read the underlying tables as the caller, not as the role
+-- that created the view. Without it a view is a way around any grant or policy
+-- on vehicles and orders. Requires Postgres 15+.
+create or replace view vehicle_cost_summary with (security_invoker = on) as
 select
     v.id                                as vehicle_id,
     v.registration,

@@ -3,6 +3,10 @@ node_modules/
 .env*.local
 .env
 *.log
+
+# Security review output — names password hashes, the Supabase project ref and
+# unfixed findings. Must not be committed or pushed.
+mbsmash-security-review-*
 .DS_Store
 .claude/
 .vercel
