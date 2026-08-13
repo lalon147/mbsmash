@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import pool from '@/lib/db';
+import { getSessionUser, unauthorized } from '@/lib/session';
+import { withAudit, logChange } from '@/lib/audit';
 
 // Most-used first, the same way the parts catalog ranks itself — but a
 // dealership is chosen for the car in front of you, not in the abstract. The
@@ -31,11 +33,33 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
-  const { name, phone, email } = await request.json();
-  const { rows } = await pool.query(
-    `INSERT INTO dealerships (name, phone, email) VALUES ($1,$2,$3)
-     RETURNING id, name, phone, email`,
-    [name.trim(), phone || null, email || null]
-  );
-  return NextResponse.json(rows[0], { status: 201 });
+  const user = await getSessionUser(request);
+  if (!user) return unauthorized();
+
+  try {
+    const { name, phone, email } = await request.json();
+    if (!name?.trim()) {
+      return NextResponse.json({ error: 'A name is required.' }, { status: 400 });
+    }
+
+    const created = await withAudit(async client => {
+      const { rows: [dealership] } = await client.query(
+        `INSERT INTO dealerships (name, phone, email) VALUES ($1,$2,$3)
+         RETURNING id, name, phone, email`,
+        [name.trim(), phone || null, email || null],
+      );
+      await logChange(client, {
+        entityType: 'dealership', entityId: dealership.id, user, action: 'created',
+      });
+      return dealership;
+    });
+
+    return NextResponse.json(created, { status: 201 });
+  } catch (err) {
+    console.error('POST /api/dealerships failed:', err);
+    return NextResponse.json(
+      { error: 'Could not save the supplier. Please try again.' },
+      { status: 500 },
+    );
+  }
 }

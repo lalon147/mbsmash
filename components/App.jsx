@@ -250,6 +250,27 @@ async function getCurrentUser() {
   return res.json();
 }
 
+// A session can lapse while the app is still open — the phone sits on the
+// counter for a month and the token behind it expires. Every data call then
+// comes back 401, and without this each one surfaces as its own "Could not
+// save…" message with no hint that signing in again is all that is needed.
+// Installed once here rather than repeated at all 38 fetch sites.
+//
+// /api/auth/* is deliberately excluded: a wrong password is also a 401, and
+// bouncing that to the login page would wipe the message explaining why.
+if (typeof window !== 'undefined' && !window.__authRedirectInstalled) {
+  window.__authRedirectInstalled = true;
+  const originalFetch = window.fetch;
+  window.fetch = async (...args) => {
+    const response = await originalFetch(...args);
+    const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url ?? '');
+    if (response.status === 401 && url.startsWith('/api/') && !url.startsWith('/api/auth/')) {
+      window.location.href = '/login';
+    }
+    return response;
+  };
+}
+
 // Shrink a phone photo to a small JPEG data URL before uploading,
 // so it fits comfortably in the database.
 function fileToResizedDataUrl(file, maxDim = 1280, quality = 0.72) {

@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import pool from '@/lib/db';
+import { getSessionUser, unauthorized } from '@/lib/session';
+import { withAudit, logChange } from '@/lib/audit';
 
 // Most-ordered first. The parts a smash repairer reaches for are the same
 // handful over and over — front bars, headlights, guards — so putting them at
@@ -32,11 +34,34 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
-  const { part_name } = await request.json();
-  if (!part_name?.trim()) return NextResponse.json({ error: 'part_name required' }, { status: 400 });
-  const { rows } = await pool.query(
-    'INSERT INTO parts_catalog (part_name) VALUES ($1) RETURNING *',
-    [part_name.trim().toUpperCase()]
-  );
-  return NextResponse.json(rows[0]);
+  const user = await getSessionUser(request);
+  if (!user) return unauthorized();
+
+  try {
+    const { part_name } = await request.json();
+    if (!part_name?.trim()) {
+      return NextResponse.json({ error: 'part_name required' }, { status: 400 });
+    }
+
+    const created = await withAudit(async client => {
+      const { rows: [part] } = await client.query(
+        'INSERT INTO parts_catalog (part_name) VALUES ($1) RETURNING *',
+        [part_name.trim().toUpperCase()],
+      );
+      // No vehicle: the catalog belongs to the shop, not to a car, so this
+      // shows up in the entity history rather than on any vehicle's timeline.
+      await logChange(client, {
+        entityType: 'catalog_part', entityId: part.id, user, action: 'created',
+      });
+      return part;
+    });
+
+    return NextResponse.json(created);
+  } catch (err) {
+    console.error('POST /api/catalog failed:', err);
+    return NextResponse.json(
+      { error: 'Could not add that part. Please try again.' },
+      { status: 500 },
+    );
+  }
 }
