@@ -5,6 +5,12 @@ import { withAudit, logChange, diffFields } from '@/lib/audit';
 // Every editable column, and how a value arriving from the browser becomes the
 // value the column holds. Keeping them in one place means the SET clause, the
 // audit diff and the validation can't drift apart.
+//
+// part_number stays on the order and goes no further. It used to be copied up
+// onto the catalog row, which meant the number off one Camry's invoice was then
+// offered for every front bar in the shop, Jolions included. The order is the
+// right home for it: it is a fact about one part on one car, and the catalog
+// reads it back only for cars of the same make, model and year.
 const EDITABLE = {
   dealership_id: v => v || null,
   unit_price:    v => (v === '' || v === null ? null : Number(v)),
@@ -12,31 +18,6 @@ const EDITABLE = {
   part_number:   v => v || null,
   expected_date: v => v || null,
 };
-
-/**
- * A part number learned from an invoice is worth more than one order. Write it
- * back to the catalog so the next car needing this part opens with the number
- * already filled in, instead of someone reading it off a box a second time.
- *
- * Only ever fills a blank: a catalog number that is already set was put there
- * deliberately and is not overwritten by whatever was typed on one order. The
- * NOT EXISTS guards the catalog's unique-part-number index — two parts claiming
- * the same number is a mistake worth ignoring rather than a 500.
- */
-async function teachCatalogPartNumber(client, order) {
-  if (!order.catalog_part_id || !order.part_number) return;
-  await client.query(
-    `UPDATE parts_catalog p
-        SET part_number = $1
-      WHERE p.id = $2
-        AND p.part_number IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM parts_catalog other
-           WHERE other.part_number = $1 AND other.id <> p.id
-        )`,
-    [order.part_number, order.catalog_part_id],
-  );
-}
 
 export async function PATCH(request, { params }) {
   const { id, orderId } = await params;
@@ -102,8 +83,6 @@ export async function PATCH(request, { params }) {
           RETURNING *`,
         values,
       );
-
-      if (changed.includes('part_number')) await teachCatalogPartNumber(client, after);
 
       await logChange(client, {
         entityType: 'order', entityId: Number(orderId), vehicleId: Number(id),

@@ -7,6 +7,7 @@ import {
   Layers, Pencil, StickyNote, Mail, Phone, Building2, AlertTriangle, Copy,
 } from 'lucide-react';
 import { readInvoicePhoto } from '@/lib/scan';
+import { MIN_YEAR, maxYear } from '@/lib/year';
 import { jpegToPdf, dataUrlToBytes } from '@/lib/pdf.mjs';
 
 // ============================================================
@@ -85,8 +86,13 @@ async function getUnassignedOrders() {
   const res = await fetch('/api/orders/unassigned');
   return res.json();
 }
-async function searchCatalog(term) {
-  const res = await fetch(`/api/catalog?q=${encodeURIComponent(term)}`);
+// The car is part of the question: what a part costs and what number is on it
+// depend on which make, model and year it is going on, so the search carries
+// the vehicle and gets that car's history back with each result.
+async function searchCatalog(term, vehicleId) {
+  const res = await fetch(
+    `/api/catalog?q=${encodeURIComponent(term)}&vehicle_id=${encodeURIComponent(vehicleId ?? '')}`,
+  );
   return res.json();
 }
 async function addVehicle(v) {
@@ -105,6 +111,15 @@ async function updateVehicleNotes(vehicleId, notes) {
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.error || 'Could not save the note. Please try again.');
+  return data;
+}
+async function updateVehicleYear(vehicleId, year) {
+  const res = await fetch(`/api/vehicles/${vehicleId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ year }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Could not save the year. Please try again.');
   return data;
 }
 async function placeOrder(order) {
@@ -617,6 +632,15 @@ export default function App() {
     setVehicles(cur => cur.map(v => (v.id === updated.id ? { ...v, ...updated } : v)));
   }
 
+  // Same for the year — and it has to reach the page the parts are ordered
+  // from, because that screen asks the car's year which part numbers it can
+  // offer. Filling the year in has to change the next answer, not the one after.
+  async function saveVehicleYear(year) {
+    const updated = await updateVehicleYear(activeVehicle.id, year);
+    setActiveVehicle(cur => (cur && cur.id === updated.id ? { ...cur, ...updated } : cur));
+    setVehicles(cur => cur.map(v => (v.id === updated.id ? { ...v, ...updated } : v)));
+  }
+
   // Apply `patch` to one order immediately, run the request, then reconcile with
   // the row the server returns — rolling that single order back if it fails.
   async function mutateOrder(orderId, patch, request) {
@@ -698,6 +722,7 @@ export default function App() {
             activeRepairId={activeRepairId}
             onSelectRepair={setActiveRepairId}
             onSaveNotes={saveVehicleNotes}
+            onSaveYear={saveVehicleYear}
             onBack={() => setView('main')}
             onAddPart={() => setView('add-part')}
             onEmailOrder={() => setView('order-email')}
@@ -1413,6 +1438,7 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
   const [adding, setAdding]         = useState(false);
   const [search, setSearch]         = useState('');
   const [reg, setReg]               = useState('');
+  const [year, setYear]             = useState('');
   const [dateIn, setDateIn]         = useState('');
   const [makes, setMakes]           = useState(makesCache ?? []);
   const [models, setModels]         = useState([]);
@@ -1444,7 +1470,7 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
   }, []);
 
   function openAdd() {
-    setReg(''); setMakeId(''); setModelId(''); setModels([]);
+    setReg(''); setYear(''); setMakeId(''); setModelId(''); setModels([]);
     setAddingMake(false); setAddingModel(false); setNewName('');
     setSaveError('');
     setDateIn(new Date().toISOString().slice(0, 10));
@@ -1487,6 +1513,7 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
       model_id: modelId || null,
       make:     makeName,
       model:    modelName,
+      year:     year.trim() || null,
       date_in:  dateIn || new Date().toISOString().slice(0, 10),
     });
     setAdding(false);
@@ -1546,7 +1573,7 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
                 <div style={{ textAlign: 'left' }}>
                   <div style={{ fontWeight: 700, fontSize: 16, letterSpacing: 0.5 }}>{v.registration}</div>
                   <div style={{ color: T.dim, fontSize: 13 }}>
-                    {[v.make, v.model].filter(Boolean).join(' ') || 'Details not set'}
+                    {[v.make, v.model, v.year].filter(Boolean).join(' ') || 'Details not set'}
                   </div>
                 </div>
               </div>
@@ -1627,6 +1654,18 @@ function VehicleList({ vehicles, onOpen, onAdded }) {
             )}
           </Field>
 
+          <Field label="Year">
+            <input type="number" inputMode="numeric" value={year}
+              onChange={e => setYear(e.target.value)}
+              min={MIN_YEAR} max={maxYear()} placeholder="e.g. 2016" style={inputStyle} />
+            {/* Two Camrys a year apart take different front bars. Without the
+                year the app can only offer part numbers to check by eye; with
+                it, the number that fits this car fills itself in. */}
+            <div style={{ fontSize: 12, color: T.dim, marginTop: 6 }}>
+              Worth the four taps — part numbers are matched on make, model and year.
+            </div>
+          </Field>
+
           <Field label="Order Date" required>
             <input type="date" value={dateIn} onChange={e => setDateIn(e.target.value)}
               style={inputStyle} />
@@ -1676,6 +1715,78 @@ function VehicleDates({ vehicle }) {
           {label} <strong style={{ color: T.text, fontWeight: 600 }}>{value}</strong>
         </span>
       ))}
+    </div>
+  );
+}
+
+/**
+ * The car's model year, editable in place.
+ *
+ * It is the difference between a 2016 Camry's front bar and a 2017 one, and the
+ * app can only offer the right part number for a car whose year it knows — so a
+ * car without one says so plainly rather than sitting blank, and takes four
+ * taps to fix. Every car booked in before the year existed is missing it.
+ */
+function VehicleYear({ vehicle, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft]     = useState(vehicle.year ? String(vehicle.year) : '');
+  const [error, setError]     = useState('');
+
+  useEffect(() => {
+    if (!editing) setDraft(vehicle.year ? String(vehicle.year) : '');
+  }, [vehicle.year, editing]);
+
+  async function save() {
+    setError('');
+    await onSave(draft.trim() || null);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 14 }}>
+        <div style={{ flex: 1 }}>
+          <input autoFocus type="number" inputMode="numeric" value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && save()}
+            min={MIN_YEAR} max={maxYear()} placeholder="e.g. 2016" style={inputStyle} />
+          {error && <div style={{ fontSize: 12.5, color: '#f472b6', marginTop: 6 }}>{error}</div>}
+        </div>
+        <button onClick={() => { setEditing(false); setError(''); }}
+          style={{ ...miniBtn(T.dim), flex: 'none', padding: '10px 12px' }}>
+          Cancel
+        </button>
+        <ActionButton
+          onClick={save}
+          onError={err => setError(err.message || 'Could not save the year. Please try again.')}
+          pendingLabel="Saving…"
+          style={{ ...miniBtn(T.accent), flex: 'none', padding: '10px 12px' }}
+        >
+          <Check size={14} /> Save
+        </ActionButton>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14,
+      fontSize: 12.5, color: T.dim }}>
+      {vehicle.year ? (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          Year <strong style={{ color: T.text, fontWeight: 600 }}>{vehicle.year}</strong>
+        </span>
+      ) : (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 5, color: '#fcd34d' }}>
+          <AlertTriangle size={13} /> No year — part numbers can&apos;t be matched to this car
+        </span>
+      )}
+      <button onClick={() => setEditing(true)} style={{
+        display: 'flex', alignItems: 'center', gap: 4,
+        background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
+        color: T.accent, fontSize: 12, fontWeight: 600, fontFamily: 'inherit',
+      }}>
+        {vehicle.year ? <><Pencil size={11} /> Edit</> : <><Plus size={12} /> Set year</>}
+      </button>
     </div>
   );
 }
@@ -1796,7 +1907,7 @@ function VehicleNotes({ notes, history, onSave }) {
   );
 }
 
-function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, activeRepairId, onSelectRepair, onSaveNotes, onBack, onAddPart, onEmailOrder, onPaint, onInvoices, onStatus, onEditOrder }) {
+function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, activeRepairId, onSelectRepair, onSaveNotes, onSaveYear, onBack, onAddPart, onEmailOrder, onPaint, onInvoices, onStatus, onEditOrder }) {
   const [repairs, setRepairs]               = useState([]);
   const [repairModal, setRepairModal]       = useState(null);   // repair being renamed/closed
   const [errorId, setErrorId]               = useState(null);
@@ -1871,11 +1982,13 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
     <>
       <Header
         title={vehicle.registration}
-        subtitle={[vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}
+        subtitle={[vehicle.make, vehicle.model, vehicle.year].filter(Boolean).join(' ') || 'Vehicle'}
         onBack={onBack}
       />
       <div style={{ padding: 18 }}>
         <VehicleDates vehicle={vehicle} />
+
+        <VehicleYear vehicle={vehicle} onSave={onSaveYear} />
 
         <VehicleNotes
           notes={vehicle.notes}
@@ -1998,6 +2111,7 @@ function VehiclePage({ vehicle, orders, ordersLoading, dealerships, dealerName, 
       {receiving && (
         <ReceiveModal
           order={receiving}
+          vehicle={vehicle}
           onCancel={() => setReceiving(null)}
           onReceive={fields => receivePart(receiving.id, fields)}
         />
@@ -2170,7 +2284,7 @@ function DealershipSelect({ dealerships, make, value, onChange, required }) {
 // of them. Marking it received used to ask nothing, which is where most of the
 // missing prices went. Skipping is one tap, because a prompt that can't be
 // dismissed on a busy day gets answered with a wrong number.
-function ReceiveModal({ order, onCancel, onReceive }) {
+function ReceiveModal({ order, vehicle, onCancel, onReceive }) {
   const [price, setPrice]           = useState(order.unit_price != null ? String(order.unit_price) : '');
   const [partNumber, setPartNumber] = useState(order.part_number || '');
   const [error, setError]           = useState('');
@@ -2199,8 +2313,12 @@ function ReceiveModal({ order, onCancel, onReceive }) {
         <input value={partNumber} onChange={e => setPartNumber(e.target.value)}
           placeholder="As printed on the invoice" style={inputStyle} />
         <div style={{ fontSize: 12, color: T.dim, marginTop: 6 }}>
-          Saved against {fmt(order.part_name)} in the catalog, so the next one is
-          already filled in.
+          {(() => {
+            const car = [vehicle?.make, vehicle?.model, vehicle?.year].filter(Boolean).join(' ');
+            return car
+              ? `Saved against this ${fmt(order.part_name)} for a ${car}, so the next one of those opens with it already filled in. Another year of the same model is offered to check, never filled in.`
+              : `Saved against this ${fmt(order.part_name)} only. With no make, model and year on the car, nothing can be matched to it later.`;
+          })()}
         </div>
       </Field>
 
@@ -2494,6 +2612,14 @@ function AddSupplierEmail({ dealership, onSaved }) {
 // ------------------------------------------------------------
 // ADD PART
 // ------------------------------------------------------------
+// "Toyota Camry 2016", or "Toyota Camry (year not recorded)" — the car a
+// remembered part number or price was last taken from. Naming it is the whole
+// point: a number is only worth reusing if it came off a car like this one.
+function fitCar(vehicle, fitYear) {
+  const car = [vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'this model';
+  return `${car} ${fitYear || '(year not recorded)'}`;
+}
+
 function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlaced }) {
   const [term, setTerm]             = useState('');
   const [results, setResults]       = useState([]);
@@ -2501,6 +2627,7 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
   const [dealershipId, setDealershipId] = useState('');
   const [quantity, setQuantity]     = useState(1);
   const [price, setPrice]           = useState('');
+  const [partNumber, setPartNumber] = useState('');
   const [expected, setExpected]     = useState('');
   const [addingNew, setAddingNew]   = useState(false);
   const [newPartName, setNewPartName] = useState('');
@@ -2520,12 +2647,12 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
   useEffect(() => {
     const token = ++searchReq.current;
     const timer = setTimeout(() => {
-      searchCatalog(term)
+      searchCatalog(term, vehicle.id)
         .then(rows => { if (searchReq.current === token) setResults(rows); })
         .catch(() => {});
     }, term ? 180 : 0);
     return () => clearTimeout(timer);
-  }, [term]);
+  }, [term, vehicle.id]);
 
   useEffect(() => {
     getVehiclePhotos(vehicle.id).then(p => Array.isArray(p) && setPhotos(p)).catch(() => {});
@@ -2560,10 +2687,17 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
   }
 
   function run(v) { setTerm(v); setAddingNew(false); }
+  // Only what is known to fit THIS car is filled in: the part number from the
+  // last one of these ordered for the same make, model and year. A number off a
+  // different year is offered underneath the box instead, to be looked at and
+  // tapped in deliberately — it is how a Camry front bar ended up on a Jolion.
+  // Price is a guess either way, so a different year's price still fills in;
+  // the box says which car it came from.
   function choose(p) {
     setPicked(p);
     setDealershipId(p.default_dealership_id ? String(p.default_dealership_id) : '');
-    setPrice(p.typical_price != null ? String(p.typical_price) : '');
+    setPrice(p.fit_price != null ? String(p.fit_price) : '');
+    setPartNumber(p.fit_number_same_year ? p.fit_part_number : '');
     setQuantity(1); setExpected('');
     setNoSupplierAck(false);
   }
@@ -2589,7 +2723,7 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
       repair_id:       repairId || null,
       catalog_part_id: picked.id,
       part_name:       picked.part_name,
-      part_number:     picked.part_number,
+      part_number:     partNumber.trim() || null,
       dealership_id:   dealershipId || null,
       quantity:        Number(quantity),
       unit_price:      price ? Number(price) : null,
@@ -2670,8 +2804,17 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
                   <div style={{ textAlign: 'left', minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 15 }}>{fmt(p.part_name)}</div>
                     <div style={{ display: 'flex', gap: 12, marginTop: 4, fontSize: 12.5, color: T.dim }}>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <Hash size={12} />{p.part_number || '—'}
+                      {/* The number this shop has used for this part on a car
+                          like the one in front of them — dashed out when there
+                          isn't one, rather than borrowed from another model. */}
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4,
+                        color: p.fit_number_same_year ? T.accent : T.dim }}>
+                        <Hash size={12} />{p.fit_part_number || '—'}
+                        {p.fit_part_number && !p.fit_number_same_year && (
+                          <em style={{ fontStyle: 'normal', opacity: 0.8 }}>
+                            {p.fit_number_year ? `(${p.fit_number_year})` : '(no year)'}
+                          </em>
+                        )}
                       </span>
                       {dealerName(p.default_dealership_id) && (
                         <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -2684,8 +2827,8 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
                       )}
                     </div>
                   </div>
-                  <div style={{ color: p.typical_price != null ? T.accent : T.dim, fontWeight: 600, fontSize: 14 }}>
-                    {p.typical_price != null ? `$${Number(p.typical_price).toFixed(2)}` : '—'}
+                  <div style={{ color: p.fit_price != null ? T.accent : T.dim, fontWeight: 600, fontSize: 14 }}>
+                    {p.fit_price != null ? `$${Number(p.fit_price).toFixed(2)}` : '—'}
                   </div>
                 </button>
               ))}
@@ -2724,11 +2867,49 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
               borderLeft: `3px solid ${T.accent}`, borderRadius: 12, padding: 16 }}>
               <div style={{ fontWeight: 700, fontSize: 17 }}>{fmt(picked.part_name)}</div>
               <div style={{ color: T.dim, fontSize: 13, marginTop: 4 }}>
-                {picked.part_number ? `Part #${picked.part_number}` : 'No part number'}
+                for {[vehicle.make, vehicle.model, vehicle.year].filter(Boolean).join(' ')
+                     || vehicle.registration}
               </div>
             </div>
 
             <div style={{ display: 'grid', gap: 14, marginTop: 16 }}>
+              {/* The part number is asked for here, on the car it belongs to,
+                  instead of being carried in from the catalog. What a 2016
+                  Camry takes is not what a 2017 one takes, and the app can only
+                  fill this in when it has seen the same part on the same year. */}
+              <Field label="Part number">
+                <input value={partNumber} onChange={e => setPartNumber(e.target.value)}
+                  placeholder="As quoted, or off the invoice when it lands"
+                  style={inputStyle} />
+                {picked.fit_part_number && picked.fit_number_same_year ? (
+                  <div style={{ fontSize: 12, color: T.dim, marginTop: 6 }}>
+                    The number on the last {fmt(picked.part_name)} ordered for a{' '}
+                    {fitCar(vehicle, picked.fit_number_year)}. Change it if the invoice says otherwise.
+                  </div>
+                ) : picked.fit_part_number ? (
+                  <div style={{ fontSize: 12.5, color: T.dim, marginTop: 8, lineHeight: 1.5,
+                    background: T.panel, border: `1px solid ${T.line}`,
+                    borderLeft: '3px solid #fcd34d', borderRadius: 10, padding: '10px 12px' }}>
+                    A {fitCar(vehicle, picked.fit_number_year)} took{' '}
+                    <strong style={{ color: T.text }}>{picked.fit_part_number}</strong>.{' '}
+                    {vehicle.year
+                      ? 'Different year, so it may be a different part — check before using it.'
+                      : 'This car has no year on it, so nothing can be matched to it — set the year on the vehicle page.'}
+                    <button type="button" onClick={() => setPartNumber(picked.fit_part_number)}
+                      style={{ ...miniBtn(T.accent), flex: 'none', width: 'fit-content',
+                        padding: '6px 12px', marginTop: 8 }}>
+                      Use it anyway
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: T.dim, marginTop: 6 }}>
+                    Nothing on record for this part on a{' '}
+                    {[vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'car like this'}.
+                    Whatever goes in here is what the next one will be offered.
+                  </div>
+                )}
+              </Field>
+
               <DealershipSelect
                 required
                 dealerships={dealerships} make={vehicle.make}
@@ -2742,6 +2923,11 @@ function AddPart({ vehicle, repairId, dealerships, dealerName, onCancel, onPlace
                 <Field label="Unit price" style={{ flex: 1 }}>
                   <input type="number" step="0.01" value={price}
                     onChange={e => setPrice(e.target.value)} placeholder="0.00" style={inputStyle} />
+                  {picked.fit_price != null && (
+                    <div style={{ fontSize: 12, color: T.dim, marginTop: 6 }}>
+                      Last paid on a {fitCar(vehicle, picked.fit_price_year)}
+                    </div>
+                  )}
                 </Field>
               </div>
               <Field label="Expected delivery">

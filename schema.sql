@@ -4,7 +4,8 @@
 -- Design notes:
 --   * Every order is tied to a vehicle (vehicle_id NOT NULL).
 --   * Ordering = pick a vehicle -> choose a catalog part -> create an order row.
---   * Catalog parts may be identified by part_number, part_name, or both.
+--   * Catalog parts are identified by name; a part number belongs to an order,
+--     because it depends on the make, model and year it was ordered for.
 --   * Dealership names are normalized into their own table to avoid the
 --     "PT / P.T. / pt" duplication problem.
 -- ============================================================
@@ -32,22 +33,19 @@ create table dealerships (
 -- ------------------------------------------------------------
 -- Parts catalog — the predefined list you order from
 -- ------------------------------------------------------------
+-- The catalog holds names only. A part number and a price belong to a part on a
+-- particular car — a 2016 Camry's front bar is not a 2017 Camry's, let alone a
+-- Haval Jolion's — so they live on the orders, and the app reads them back for
+-- a car of the same make, model and year. See migrations 023 and 024.
 create table parts_catalog (
     id                      bigint generated always as identity primary key,
-    part_number             text,                       -- official number e.g. 5211947949 (nullable)
     part_name               text not null,              -- e.g. "FR BAR"
     default_dealership_id   bigint references dealerships(id) on delete set null,
-    typical_price           numeric(10,2),
     vehicle_make            text,                       -- optional, fill over time
     vehicle_model           text,                       -- optional
     active                  boolean not null default true,
     created_at              timestamptz not null default now()
 );
-
--- A part_number, when present, should be unique in the catalog.
-create unique index parts_catalog_part_number_key
-    on parts_catalog (part_number)
-    where part_number is not null;
 
 -- Helps catalog search by name.
 create index parts_catalog_part_name_idx on parts_catalog (lower(part_name));
@@ -60,6 +58,9 @@ create table vehicles (
     registration    text not null unique,
     make            text,
     model           text,
+    -- The model year, and the reason a part number can be offered to one Camry
+    -- and not another. Nullable: plenty of cars were booked in without it.
+    year            smallint check (year is null or year between 1950 and 2100),
     customer_name   text,
     date_in         date default current_date,
     notes           text,
