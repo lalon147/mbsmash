@@ -64,6 +64,8 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("playwright is not installed:  pip install playwright")
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 REPO = Path(__file__).resolve().parent.parent
 ENQUIRY_URL = (
     "https://www.vicroads.vic.gov.au/registration/buy-sell-or-transfer-a-vehicle/"
@@ -109,16 +111,24 @@ def sql_lit(value) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def fetch_missing(limit: int) -> list[dict]:
-    """Vehicles with no make recorded, newest first."""
+WHERE_MISSING = {
+    "make":  "nullif(btrim(make), '') IS NULL",
+    "model": "nullif(btrim(model), '') IS NULL",
+    "year":  "year IS NULL",
+    "any":   ("nullif(btrim(make), '') IS NULL OR "
+              "nullif(btrim(model), '') IS NULL OR year IS NULL"),
+}
+
+
+def fetch_missing(limit: int, missing: str = "any") -> list[dict]:
+    """Vehicles still short of a field, newest first."""
     rows = psql(
         f"""
         SELECT id, registration,
                coalesce(nullif(btrim(make), ''),  ''),
                coalesce(nullif(btrim(model), ''), '')
         FROM vehicles
-        WHERE nullif(btrim(make), '') IS NULL
-           OR nullif(btrim(model), '') IS NULL
+        WHERE {WHERE_MISSING[missing]}
         ORDER BY date_in DESC NULLS LAST, id DESC
         LIMIT {int(limit)}
         """
@@ -376,6 +386,8 @@ def main() -> int:
                      help="work through vehicles that have no make/model recorded")
     ap.add_argument("--limit", type=int, default=5,
                     help="how many vehicles to do this run (default 5)")
+    ap.add_argument("--missing", choices=sorted(WHERE_MISSING), default="make",
+                    help="which gap to target (default: make)")
     ap.add_argument("--apply", action="store_true",
                     help="write results back to the vehicles table")
     ap.add_argument("--delay", type=float, default=12.0,
@@ -389,11 +401,14 @@ def main() -> int:
     if args.rego:
         targets = [{"id": None, "registration": args.rego.strip().upper()}]
     else:
-        targets = fetch_missing(args.limit)
+        targets = fetch_missing(args.limit, args.missing)
         if not targets:
-            print("Nothing to do -- every vehicle already has a make and model.")
+            print(f"Nothing to do -- no vehicle is missing {args.missing}.")
             return 0
         print(f"{len(targets)} vehicle(s) to look up.\n")
+
+    import cz_normalise  # noqa: E402  (same directory)
+    catalog = cz_normalise.Catalog.from_db(database_url())
 
     cache = load_cache()
     session = Session()
@@ -411,6 +426,13 @@ def main() -> int:
                 found = session.lookup(rego, dump_html=args.dump_html)
                 cache[rego] = found
                 save_cache(cache)
+
+            # VicRoads has its own spelling and casing. Put it through the same
+            # normaliser as CrashZone so this can't undo migration 027's cleanup.
+            if found:
+                found = cz_normalise.normalise(catalog, found)
+                if found.get("_review"):
+                    print(f"    ! {found['_review']}")
 
             if found:
                 for key in ("make", "model", "year", "body_type", "colour", "status"):
