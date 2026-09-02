@@ -11,3 +11,12 @@ mbsmash-security-review-*
 .claude/
 .vercel
 .env*
+
+# rego_lookup.py working files — the browser profile holds session cookies
+scripts/.rego-browser-profile/
+scripts/.rego-cache.json
+scripts/.rego-dumps/
+.venv-rego/
+scripts/.crashzone-token.json
+scripts/.crashzone-cache.json
+__pycache__/
